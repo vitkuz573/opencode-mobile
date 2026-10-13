@@ -38,8 +38,19 @@ class LocalServerScreen extends ConsumerWidget {
             ),
         ],
       ),
+      // A switcher that keeps the outgoing screen in the tree leaves an
+      // invisible copy of it on top of the new one, still taking touches. The
+      // rows that stopped responding were exactly the ones the old layout
+      // covered, and the ones below it kept working. An outgoing child is
+      // therefore never interactive.
       body: AnimatedSwitcher(
         duration: const Duration(milliseconds: 220),
+        layoutBuilder: (current, previous) => Stack(
+          children: [
+            for (final child in previous) IgnorePointer(child: child),
+            ?current,
+          ],
+        ),
         child: switch (local) {
           _ when local.loading => const _CheckingView(),
           _ when local.install.running => _InstallingView(
