@@ -418,9 +418,13 @@ class OpenCodeApi {
     for (final host in hosts) {
       try {
         final cookie = await _redeem(host, uri.path);
+        debugPrint('pairing redeemed on $host');
         return (baseUrl: host, cookie: cookie);
       } on ApiException catch (error) {
+        // The server explains a refused code in plain prose; keep that text,
+        // since "rejected" on its own sent the investigation the wrong way.
         lastError = error;
+        debugPrint('pairing refused on $host: ${error.message}');
       }
     }
 

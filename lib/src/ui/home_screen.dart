@@ -8,6 +8,7 @@ import '../state/providers.dart';
 import 'account_screen.dart';
 import 'permission_sheet.dart';
 import 'servers_screen.dart';
+import 'settings_screen.dart';
 import 'usage_screen.dart';
 import 'widgets.dart';
 
@@ -31,6 +32,9 @@ class HomeScreen extends ConsumerWidget {
           _ConnectionStatus(),
           PopupMenuButton<String>(
             onSelected: (value) => switch (value) {
+              'settings' => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+              ),
               'servers' => Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const ServersScreen()),
               ),
@@ -48,6 +52,15 @@ class HomeScreen extends ConsumerWidget {
               _ => null,
             },
             itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'settings',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.settings_outlined),
+                  title: const Text('Settings'),
+                ),
+              ),
+              PopupMenuDivider(),
               PopupMenuItem(
                 value: 'servers',
                 child: ListTile(

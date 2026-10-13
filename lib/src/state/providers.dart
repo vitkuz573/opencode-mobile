@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/api.dart';
+import '../data/app_log.dart';
 import '../data/events.dart';
 import '../data/models.dart';
 import '../data/pairing.dart';
@@ -46,6 +47,30 @@ class ConnectionState {
 
 final profileStoreProvider = Provider<ProfileStore>((ref) => ProfileStore());
 
+/// The log the settings screen reads.
+final appLogProvider = Provider<AppLog>((ref) => AppLog());
+
+/// Bumped whenever the log changes, so watchers rebuild.
+///
+/// The buffer is a mutable ring, which Riverpod cannot see through. Riverpod 3
+/// dropped `StateProvider`, so this is a plain Notifier rather than the obvious
+/// `StateProvider<int>`.
+class AppLogRevision extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void bump() => state = state + 1;
+}
+
+final appLogRevisionProvider =
+    NotifierProvider<AppLogRevision, int>(AppLogRevision.new);
+
+/// The log, exposed through a provider so widgets rebuild when it grows.
+final logProvider = Provider<AppLog>((ref) {
+  ref.watch(appLogRevisionProvider);
+  return ref.read(appLogProvider);
+});
+
 final connectionProvider =
     AsyncNotifierProvider<ConnectionController, ConnectionState>(
       ConnectionController.new,
@@ -80,6 +105,10 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
       // Restoring a previous connection is a connection too: the addresses it
       // advertises are the ones a later pairing link can fall back to.
       await _rememberHosts(info);
+      ref.read(appLogProvider).info(
+        'net',
+        'restored ${active.displayHost}, server ${info.version}',
+      );
       return ConnectionState(
         phase: ConnectionPhase.connected,
         profile: active,
@@ -87,6 +116,10 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
         knownProfiles: profiles,
       );
     } on ApiException catch (error) {
+      ref.read(appLogProvider).error(
+        'net',
+        'could not restore ${active.displayHost}: ${error.message}',
+      );
       return ConnectionState(
         phase: ConnectionPhase.error,
         profile: active,
@@ -112,6 +145,9 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
   }
 
   Future<bool> connect(ServerProfile profile) async {
+    final log = ref.read(appLogProvider);
+    log.info('net', 'connecting to ${profile.displayHost} '
+        '(${profile.authMode.name})');
     final current = state.value;
     state = AsyncData(
       (current ?? const ConnectionState()).copyWith(
@@ -136,6 +172,8 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
       );
       final profiles = await _remember(stamped);
       await _rememberHosts(info);
+      log.info('net', 'connected to ${stamped.displayHost}, '
+          'server ${info.version}');
       await ref.read(profileStoreProvider).saveActiveBaseUrl(stamped.baseUrl);
       state = AsyncData(
         ConnectionState(
@@ -147,6 +185,10 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
       );
       return true;
     } on ApiException catch (error) {
+      log.error(
+        'net',
+        'connect failed: ${error.message} (${error.statusCode ?? 'no status'})',
+      );
       state = AsyncData(
         (current ?? const ConnectionState()).copyWith(
           phase: ConnectionPhase.error,
@@ -230,6 +272,7 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
   }
 
   void disconnect() {
+    ref.read(appLogProvider).info('net', 'disconnected');
     _api = null;
     _apiKey = null;
     state = AsyncData(
@@ -245,6 +288,7 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
         .where((p) => p.baseUrl != profile.baseUrl)
         .toList(growable: false);
     await store.saveAll(remaining);
+    ref.read(appLogProvider).info('net', 'forgot ${profile.displayHost}');
     final wasActive = state.value?.profile?.baseUrl == profile.baseUrl;
     if (wasActive) {
       _api = null;
@@ -332,6 +376,23 @@ final liveEventsProvider = Provider<LiveEvents?>((ref) {
   if (api == null) return null;
   final stream = EventStream(dio: api.raw);
   ref.onDispose(stream.dispose);
+
+  final log = ref.read(appLogProvider);
+  final revision = ref.read(appLogRevisionProvider.notifier);
+  // Reconnects are the usual reason a session "froze", and they were invisible
+  // from inside the app. Recorded at debug level so the default view stays
+  // about things that matter.
+  stream.status.listen((status) {
+    final detail = status.message;
+    log.debug(
+      'sse',
+      detail == null || detail.isEmpty
+          ? status.status.name
+          : '${status.status.name}: $detail',
+    );
+    revision.bump();
+  });
+
   unawaited(stream.start());
   return LiveEvents(stream);
 });
