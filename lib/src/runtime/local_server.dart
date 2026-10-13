@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 import 'runtime_installer.dart';
 import 'runtime_paths.dart';
 import 'server_output.dart';
-
 /// Where the phone-hosted server is in its life cycle.
 enum LocalServerPhase {
   /// No runtime installed yet. Nothing has been downloaded, by design.
@@ -125,6 +124,10 @@ class LocalServerHandle {
   StreamSubscription<String>? _stderr;
   Timer? _startupTimer;
 
+  /// Port of the app's CONNECT relay, when one is running. Set on [start];
+  /// every later spawn (`pair`, `serve`) inherits it.
+  int? _proxyPort;
+
   final _lines = StringBuffer();
   LocalServerStatus _status = const LocalServerStatus();
 
@@ -156,12 +159,22 @@ class LocalServerHandle {
   Future<String?> installedVersion() => installer.installedVersion();
 
   /// Starts the server, or reports the one already running.
-  Future<LocalServerStatus> start() async {
+  ///
+  /// [preferredPort] is the port a previous start used. It is taken when it
+  /// is free so restarts keep the address; otherwise the canonical default
+  /// and then a random free port are tried in that order.
+  ///
+  /// [proxyPort] is the app's CONNECT relay (see `connect_proxy.dart`) that
+  /// carries the server's outbound HTTPS past the blind musl resolver.
+  Future<LocalServerStatus> start({int? preferredPort, int? proxyPort}) async {
     if (_process != null) return _status;
+    // Remembered for every later spawn: `pair` needs the relay exactly as
+    // much as `serve` does.
+    _proxyPort = proxyPort;
 
     await _prepareLauncher();
     paths.ensureDirectories();
-    final port = await _pickPort();
+    final port = await _pickPort(preferredPort);
     _lines.clear();
 
     // Whatever is in the registry belongs to a server that is no longer ours.
@@ -226,31 +239,62 @@ class LocalServerHandle {
     return _status;
   }
 
-  /// Watches the registry until the server has written its credentials.
+  /// Watches the password file until the server has written its credentials.
+  ///
+  /// Stdout only carries the address in `--service` mode; the password lives
+  /// here. The file is cleared before every start, so whatever appears in it
+  /// was written by the process about to be trusted. Keeps watching while the
+  /// server is up but passwordless: the listening line usually arrives first,
+  /// and leaving then would show a running server with no password.
   Future<void> _pollRegistry(int port) async {
     final deadline = DateTime.now().add(const Duration(seconds: 28));
     while (DateTime.now().isBefore(deadline)) {
-      if (_status.phase != LocalServerPhase.starting) return;
+      final status = _status;
+      final needsPassword =
+          status.phase == LocalServerPhase.starting ||
+          (status.phase == LocalServerPhase.running &&
+              status.password == null);
+      if (!needsPassword) return;
       final registry = await _readServiceRegistry();
       final password = registry?['password'];
-      final url = registry?['url'];
-      final registryPort = url is String ? Uri.tryParse(url)?.port : null;
       if (password is String &&
           password.isNotEmpty &&
-          (registryPort == null || registryPort == port)) {
+          await _isReachable(port)) {
         _startupTimer?.cancel();
         _startupTimer = null;
         _emit(
-          _status.copyWith(
+          status.copyWith(
             phase: LocalServerPhase.running,
-            address: url is String ? url : _status.address,
+            address:
+                status.address ?? 'http://127.0.0.1:$port',
             password: password,
-            startedAt: _status.startedAt ?? DateTime.now(),
+            startedAt: status.startedAt ?? DateTime.now(),
           ),
         );
         return;
       }
       await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (_status.phase == LocalServerPhase.starting &&
+        _status.password == null) {
+      _fail('The server started but never wrote its password.');
+    }
+  }
+
+  /// Whether something answers on the picked port. Guards the fallback
+  /// address: a password file with no listener behind it belongs to a server
+  /// that is not ours.
+  static Future<bool> _isReachable(int port) async {
+    try {
+      final socket = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        port,
+        timeout: const Duration(seconds: 2),
+      );
+      socket.destroy();
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -318,23 +362,38 @@ class LocalServerHandle {
     return link;
   }
 
-  /// Everything the server needs to find its own files.
+  /// Everything the server needs to find its own files — and, since the musl
+  /// resolver is blind on Android, a way to reach the network by name.
   ///
   /// `HOME` is the one that is not optional: without it the server tries to
   /// create `/.local`, fails because `/` is read-only, and exits before saying
   /// anything useful. `TMPDIR` matters just as much — Bun falls back to `/tmp`,
   /// which does not exist on Android, and gives up with a bare
   /// "read-only file system, mkdir '/tmp'".
-  Map<String, String> get _environment => {
-    'HOME': paths.home,
-    'TMPDIR': paths.temp,
-    'TMP': paths.temp,
-    'TEMP': paths.temp,
-    'LD_LIBRARY_PATH': paths.libraryPath,
-    'XDG_CACHE_HOME': '${paths.home}/.cache',
-    'XDG_DATA_HOME': '${paths.home}/.local/share',
-    'XDG_CONFIG_HOME': '${paths.home}/.config',
-  };
+  ///
+  /// The proxy variables point at the app's own CONNECT relay on loopback (see
+  /// `connect_proxy.dart`): an IP literal needs no resolution, and the relay
+  /// resolves with the platform resolver, which works. TLS passes through
+  /// untouched. `NO_PROXY` keeps local traffic direct.
+  Future<Map<String, String>> _environment([int? proxyPort]) async {
+    final env = <String, String>{
+      'HOME': paths.home,
+      'TMPDIR': paths.temp,
+      'TMP': paths.temp,
+      'TEMP': paths.temp,
+      'LD_LIBRARY_PATH': paths.libraryPath,
+      'XDG_CACHE_HOME': '${paths.home}/.cache',
+      'XDG_DATA_HOME': '${paths.home}/.local/share',
+      'XDG_CONFIG_HOME': '${paths.home}/.config',
+    };
+    if (proxyPort != null) {
+      final proxy = 'http://127.0.0.1:$proxyPort';
+      env['HTTPS_PROXY'] = proxy;
+      env['HTTP_PROXY'] = proxy;
+      env['NO_PROXY'] = '127.0.0.1,localhost';
+    }
+    return env;
+  }
 
   /// Runs the runtime once and checks it answers.
   ///
@@ -380,9 +439,13 @@ class LocalServerHandle {
     return known == null ? 'errno $code' : 'errno $code, $known';
   }
 
-  /// The file `opencode serve --service` records itself in.
+  /// The file `opencode serve` records its password in.
+  ///
+  /// With `--service` the server never prints the password: it only appears
+  /// here, rewritten on every start. Stdout carries the address (parsed in
+  /// `_onLine`); this file is the only source of the password.
   String get _registryPath =>
-      '${paths.home}/.local/state/opencode/service.json';
+      '${paths.home}/.config/opencode/service.json';
 
   Future<void> _clearServiceRegistry() async {
     final file = File(_registryPath);
@@ -419,12 +482,13 @@ class LocalServerHandle {
   /// One place decides how to launch, so `pair` and `serve` behave the same way
   /// on a device that needs the shell as on one that does not.
   Future<ProcessResult> _run(List<String> command, Duration timeout) async {
+    final environment = await _environment(_proxyPort);
     if (_useShell) {
       return _complete(
         Process.run(
           _shell,
           ['-c', _quote(command)],
-          environment: _environment,
+          environment: environment,
           workingDirectory: paths.workspace,
         ),
         timeout,
@@ -435,7 +499,7 @@ class LocalServerHandle {
         Process.run(
           command.first,
           command.sublist(1),
-          environment: _environment,
+          environment: environment,
           workingDirectory: paths.workspace,
         ),
         timeout,
@@ -449,7 +513,7 @@ class LocalServerHandle {
         Process.run(
           _shell,
           ['-c', _quote(command)],
-          environment: _environment,
+          environment: environment,
           workingDirectory: paths.workspace,
         ),
         timeout,
@@ -475,12 +539,13 @@ class LocalServerHandle {
   /// argv gets the same process running. The first refusal is remembered so the
   /// slower path is not retried on every start.
   Future<Process> _spawn(List<String> command) async {
+    final environment = await _environment(_proxyPort);
     if (!_useShell) {
       try {
         return await Process.start(
           command.first,
           command.sublist(1),
-          environment: _environment,
+          environment: environment,
           workingDirectory: paths.workspace,
         );
       } on ProcessException catch (error) {
@@ -493,7 +558,7 @@ class LocalServerHandle {
     return Process.start(
       _shell,
       ['-c', _quote(command)],
-      environment: _environment,
+      environment: environment,
       workingDirectory: paths.workspace,
     );
   }
@@ -586,9 +651,17 @@ class LocalServerHandle {
   ///
   /// The fallback is rare but real: a previous instance that has not finished
   /// exiting still holds the port, and the server would simply exit on a busy
-  /// one.
-  static Future<int> _pickPort() async {
-    if (await _isFree(preferredPort)) return preferredPort;
+  /// one. A saved port that is busy is skipped the same way rather than waited
+  /// on: something else is answering there, and stealing it is not an option.
+  static Future<int> _pickPort([int? preferred]) async {
+    final candidates = <int>{
+      if (preferred != null && preferred > 1024 && preferred < 65536)
+        preferred,
+      preferredPort,
+    };
+    for (final port in candidates) {
+      if (await _isFree(port)) return port;
+    }
     for (var attempt = 0; attempt < 20; attempt++) {
       final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final port = socket.port;

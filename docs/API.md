@@ -81,6 +81,7 @@ types, so the type table below was recovered by recording a live session.
 | `session.step.streamed` | step progress |
 | `session.step.ended` | step summary |
 | `session.step.failed` | `{ sessionID, … }` |
+| `session.retry.scheduled` | `{ sessionID, assistantMessageID, attempt, at, error{type, message} }` — an attempt failed and another is scheduled; the execution is still alive |
 | `session.text.started` | `{ sessionID, assistantMessageID, ordinal }` |
 | `session.text.delta` | `{ sessionID, assistantMessageID, ordinal, delta }` |
 | `session.text.ended` | `{ sessionID, assistantMessageID, ordinal, text }` |

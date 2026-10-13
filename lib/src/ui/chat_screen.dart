@@ -396,6 +396,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
       body: Column(
         children: [
+          if (_timeline.isRetrying)
+            _RetryNotice(
+              attempt: _timeline.retryAttempt,
+              error: _timeline.retryError!,
+            ),
           if (pending.isNotEmpty)
             _InlinePermission(
               request: pending.first,
@@ -485,6 +490,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 }
 
 // --- messages ---------------------------------------------------------------
+
+/// A failed attempt the server is retrying. It sits above the messages rather
+/// than on one: the failure belongs to the attempt, and the attempt is still
+/// going, so this is news, not a verdict.
+class _RetryNotice extends StatelessWidget {
+  const _RetryNotice({required this.attempt, required this.error});
+
+  final int attempt;
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = attempt > 0 ? 'Attempt $attempt failed' : 'Retrying';
+    return Material(
+      color: Colors.orange.withValues(alpha: 0.16),
+      child: ListTile(
+        dense: true,
+        leading: const SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        title: Text('$label. Retrying…'),
+        subtitle: Text(error, maxLines: 2, overflow: TextOverflow.ellipsis),
+      ),
+    );
+  }
+}
 
 class MessageBlock extends StatelessWidget {
   const MessageBlock({super.key, required this.message, this.suppressHeader = false});

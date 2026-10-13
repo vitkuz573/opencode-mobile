@@ -162,6 +162,127 @@ void main() {
     });
   });
 
+  group('retry folding', () {
+    ServerEvent retry({Object? error, int attempt = 2}) => ServerEvent.fromJson({
+      'type': Ev.retryScheduled,
+      'created': 3,
+      'data': {
+        'sessionID': 'ses_x',
+        'assistantMessageID': 'msg_x',
+        'attempt': attempt,
+        'at': 1791913357612,
+        'error': ?error,
+      },
+    });
+
+    test('records the attempt and the reason, and stays running', () {
+      final timeline = fold([
+        ServerEvent.fromJson({
+          'type': Ev.executionStarted,
+          'created': 1,
+          'data': {'sessionID': 'ses_x'},
+        }),
+        retry(
+          error: {
+            'type': 'provider.transport',
+            'message': 'getaddrinfo ETIMEOUT opencode.ai',
+          },
+        ),
+      ], 'ses_x');
+
+      expect(timeline.running, isTrue);
+      expect(timeline.retryAttempt, 2);
+      expect(timeline.retryError, 'getaddrinfo ETIMEOUT opencode.ai');
+    });
+
+    test('real progress retires the notice', () {
+      var timeline = fold([
+        ServerEvent.fromJson({
+          'type': Ev.executionStarted,
+          'created': 1,
+          'data': {'sessionID': 'ses_x'},
+        }),
+        retry(error: 'boom'),
+      ], 'ses_x');
+      expect(timeline.isRetrying, isTrue);
+
+      timeline = applyEvent(
+        timeline,
+        ServerEvent.fromJson({
+          'type': Ev.textStarted,
+          'created': 4,
+          'data': {'sessionID': 'ses_x', 'assistantMessageID': 'msg_x'},
+        }),
+        sessionId: 'ses_x',
+      );
+
+      expect(timeline.isRetrying, isFalse);
+      expect(timeline.running, isTrue);
+    });
+
+    test('a terminal event clears both running and the notice', () {
+      final timeline = fold([
+        ServerEvent.fromJson({
+          'type': Ev.executionStarted,
+          'created': 1,
+          'data': {'sessionID': 'ses_x'},
+        }),
+        retry(error: 'boom'),
+        ServerEvent.fromJson({
+          'type': Ev.executionSucceeded,
+          'created': 5,
+          'data': {'sessionID': 'ses_x'},
+        }),
+      ], 'ses_x');
+
+      expect(timeline.running, isFalse);
+      expect(timeline.isRetrying, isFalse);
+    });
+
+    test('a new execution starts without the old failure', () {
+      final timeline = fold([
+        ServerEvent.fromJson({
+          'type': Ev.executionStarted,
+          'created': 1,
+          'data': {'sessionID': 'ses_x'},
+        }),
+        retry(error: 'boom'),
+        ServerEvent.fromJson({
+          'type': Ev.executionStarted,
+          'created': 6,
+          'data': {'sessionID': 'ses_x'},
+        }),
+      ], 'ses_x');
+
+      expect(timeline.running, isTrue);
+      expect(timeline.isRetrying, isFalse);
+    });
+
+    test('error text degrades gracefully', () {
+      Timeline withError(Object? error) => fold(
+        [
+          ServerEvent.fromJson({
+            'type': Ev.executionStarted,
+            'created': 1,
+            'data': {'sessionID': 'ses_x'},
+          }),
+          retry(error: error),
+        ],
+        'ses_x',
+      );
+
+      expect(
+        withError({'type': 'provider.transport'}).retryError,
+        'provider.transport',
+      );
+      expect(withError('plain failure').retryError, 'plain failure');
+      expect(
+        withError(null).retryError,
+        'The request failed and will be retried',
+      );
+    });
+  });
+
   group('robustness', () {
     test('ignores events belonging to other sessions', () {
       final events = loadFixture('tool_calls');

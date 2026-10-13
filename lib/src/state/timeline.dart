@@ -11,6 +11,8 @@ class Timeline {
     this.running = false,
     this.cost = 0,
     this.tokens,
+    this.retryAttempt = 0,
+    this.retryError,
   });
 
   final List<ChatMessage> messages;
@@ -18,18 +20,32 @@ class Timeline {
   final double cost;
   final TokenUsage? tokens;
 
+  /// Which attempt failed last, or 0 when nothing is being retried.
+  final int retryAttempt;
+
+  /// Why the last attempt failed, or null when nothing is being retried.
+  /// Transient by design: any real progress clears it.
+  final String? retryError;
+
   bool get isEmpty => messages.isEmpty;
+
+  bool get isRetrying => retryAttempt > 0 && retryError != null;
 
   Timeline copyWith({
     List<ChatMessage>? messages,
     bool? running,
     double? cost,
     TokenUsage? tokens,
+    int? retryAttempt,
+    String? retryError,
+    bool clearRetry = false,
   }) => Timeline(
     messages: messages ?? this.messages,
     running: running ?? this.running,
     cost: cost ?? this.cost,
     tokens: tokens ?? this.tokens,
+    retryAttempt: clearRetry ? 0 : (retryAttempt ?? this.retryAttempt),
+    retryError: clearRetry ? null : (retryError ?? this.retryError),
   );
 }
 
@@ -43,43 +59,61 @@ Timeline applyEvent(Timeline state, ServerEvent event, {String? sessionId}) {
 
   switch (event.type) {
     case Ev.executionStarted:
-      return state.copyWith(running: true);
+      return state.copyWith(running: true, clearRetry: true);
 
     case Ev.executionSucceeded:
     case Ev.executionInterrupted:
-      return state.copyWith(running: false);
+      return state.copyWith(running: false, clearRetry: true);
+
+    case Ev.retryScheduled:
+      final attempt = event.data['attempt'];
+      return state.copyWith(
+        running: true,
+        retryAttempt: attempt is num ? attempt.toInt() : 0,
+        retryError: _errorText(event),
+      );
 
     case Ev.textStarted:
-      return _withAssistant(state, event.messageId);
+      return _progress(_withAssistant(state, event.messageId));
 
     case Ev.textDelta:
-      return _appendText(state, event.messageId, _ordinal(event), event.data['delta'] as String? ?? '');
+      return _progress(
+        _appendText(state, event.messageId, _ordinal(event), event.data['delta'] as String? ?? ''),
+      );
 
     case Ev.textEnded:
-      return _setText(state, event.messageId, _ordinal(event), event.data['text'] as String? ?? '',);
+      return _progress(
+        _setText(state, event.messageId, _ordinal(event), event.data['text'] as String? ?? '',),
+      );
 
     case Ev.reasoningStarted:
-      return _withAssistant(state, event.messageId);
+      return _progress(_withAssistant(state, event.messageId));
 
     case Ev.reasoningDelta:
-      return _appendReasoning(state, event.messageId, _ordinal(event), event.data['delta'] as String? ?? '',);
+      return _progress(
+        _appendReasoning(state, event.messageId, _ordinal(event), event.data['delta'] as String? ?? '',),
+      );
 
     case Ev.reasoningEnded:
-      return _setReasoning(state, event.messageId, _ordinal(event), event.data['text'] as String? ?? '',);
+      return _progress(
+        _setReasoning(state, event.messageId, _ordinal(event), event.data['text'] as String? ?? '',),
+      );
 
     case Ev.toolInputStarted:
-      return _withTool(
-        state,
-        event.messageId,
-        ToolPart(
-          id: event.toolId,
-          name: event.data['name'] as String? ?? 'tool',
-          status: ToolStatus.pending,
+      return _progress(
+        _withTool(
+          state,
+          event.messageId,
+          ToolPart(
+            id: event.toolId,
+            name: event.data['name'] as String? ?? 'tool',
+            status: ToolStatus.pending,
+          ),
         ),
       );
 
     case Ev.toolCalled:
-      return _updateTool(state, event.messageId, event.toolId, (tool) {
+      return _progress(_updateTool(state, event.messageId, event.toolId, (tool) {
         final input = event.data['input'];
         return ToolPart(
           id: tool.id,
@@ -91,10 +125,10 @@ Timeline applyEvent(Timeline state, ServerEvent event, {String? sessionId}) {
           output: tool.output,
           error: tool.error,
         );
-      });
+      }));
 
     case Ev.toolSuccess:
-      return _updateTool(state, event.messageId, event.toolId, (tool) {
+      return _progress(_updateTool(state, event.messageId, event.toolId, (tool) {
         final content = event.data['content'];
         final text = content is List
             ? content
@@ -110,10 +144,10 @@ Timeline applyEvent(Timeline state, ServerEvent event, {String? sessionId}) {
           status: ToolStatus.completed,
           output: text.isEmpty ? tool.output : text,
         );
-      });
+      }));
 
     case Ev.toolFailed:
-      return _updateTool(state, event.messageId, event.toolId, (tool) {
+      return _progress(_updateTool(state, event.messageId, event.toolId, (tool) {
         final error = event.data['error'];
         return ToolPart(
           id: tool.id,
@@ -125,20 +159,43 @@ Timeline applyEvent(Timeline state, ServerEvent event, {String? sessionId}) {
               ? error['message'] as String? ?? 'Tool failed'
               : error as String? ?? 'Tool failed',
         );
-      });
+      }));
 
     case Ev.usageUpdated:
       final tokens = event.data['tokens'];
-      return state.copyWith(
-        cost: (event.data['cost'] as num?)?.toDouble() ?? state.cost,
-        tokens: tokens is Map
-            ? TokenUsage.fromJson(tokens.cast<String, Object?>())
-            : state.tokens,
+      return _progress(
+        state.copyWith(
+          cost: (event.data['cost'] as num?)?.toDouble() ?? state.cost,
+          tokens: tokens is Map
+              ? TokenUsage.fromJson(tokens.cast<String, Object?>())
+              : state.tokens,
+        ),
       );
 
     default:
       return state;
   }
+}
+
+/// Real progress retires the retry notice: the failure it described is no
+/// longer the latest news.
+Timeline _progress(Timeline state) => state.isRetrying
+    ? state.copyWith(clearRetry: true)
+    : state;
+
+/// The human sentence inside an error payload, whatever shape it arrived in.
+/// The server sends `{type, message}`; anything else degrades to the type, the
+/// raw string, and finally a generic line rather than nothing.
+String _errorText(ServerEvent event) {
+  final error = event.data['error'];
+  if (error is Map) {
+    final message = error['message'];
+    if (message is String && message.isNotEmpty) return message;
+    final type = error['type'];
+    if (type is String && type.isNotEmpty) return type;
+  }
+  if (error is String && error.isNotEmpty) return error;
+  return 'The request failed and will be retried';
 }
 
 // --- internals --------------------------------------------------------------

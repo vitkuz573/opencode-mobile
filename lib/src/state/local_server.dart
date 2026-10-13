@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/api.dart';
+import '../runtime/connect_proxy.dart';
 import '../runtime/local_server.dart';
 import '../runtime/runtime_installer.dart';
 import '../runtime/runtime_manifest.dart';
@@ -121,6 +122,12 @@ class LocalServerState {
 class LocalServerController extends Notifier<LocalServerState> {
   LocalServerHandle? _handle;
   final _keepAlive = ServerKeepAlive();
+
+  /// The CONNECT relay the server's outbound HTTPS goes through. Owned here,
+  /// next to the server: it starts before the server and stops after it, so
+  /// no request ever leaves without a way out and no relay idles without a
+  /// server to serve.
+  final _proxy = ConnectProxy();
 
   /// The folder the phone's server works in.
   ///
@@ -264,6 +271,7 @@ class LocalServerController extends Notifier<LocalServerState> {
   Future<void> uninstall() async {
     final handle = _handle;
     if (handle != null) await handle.stop();
+    await _proxy.stop();
     final installer = await ref.read(runtimeInstallerProvider.future);
     installer.remove();
     ref.read(appLogProvider).info('runtime', 'removed the runtime');
@@ -275,13 +283,19 @@ class LocalServerController extends Notifier<LocalServerState> {
   Future<bool> start() async {
     if (!state.isInstalled) return false;
     final handle = await _handleOf();
+    final store = ref.read(profileStoreProvider);
+    final proxyPort = await _proxy.start();
 
     state = state.copyWith(
       status: state.status.copyWith(phase: LocalServerPhase.starting),
     );
     try {
-      await handle.start();
+      await handle.start(
+        preferredPort: await store.loadLocalPort(),
+        proxyPort: proxyPort,
+      );
     } catch (error) {
+      await _proxy.stop();
       _reportStatus(
         LocalServerStatus(
           phase: LocalServerPhase.failed,
@@ -294,10 +308,21 @@ class LocalServerController extends Notifier<LocalServerState> {
 
     final deadline = DateTime.now().add(const Duration(seconds: 35));
     while (state.status.phase == LocalServerPhase.starting) {
-      if (DateTime.now().isAfter(deadline)) return false;
+      if (DateTime.now().isAfter(deadline)) {
+        await _proxy.stop();
+        return false;
+      }
       await Future<void>.delayed(const Duration(milliseconds: 150));
     }
-    if (!state.status.isRunning) return false;
+    if (!state.status.isRunning) {
+      await _proxy.stop();
+      return false;
+    }
+
+    // Remember the port while it is ours: the next start prefers it when it
+    // is free, so the address survives restarts instead of going stale.
+    final port = state.status.port;
+    if (port != null) await store.saveLocalPort(port);
 
     // Hold the process in a foreground service so Android does not reclaim the
     // app the moment the screen goes off.
@@ -312,6 +337,7 @@ class LocalServerController extends Notifier<LocalServerState> {
   Future<void> stop() async {
     final handle = _handle;
     if (handle != null) await handle.stop();
+    await _proxy.stop();
     await _keepAlive.stop();
     _reportStatus(
       LocalServerStatus(

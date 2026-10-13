@@ -1,8 +1,10 @@
 // Reading what the OpenCode process prints.
 //
-// The server's own stdout is the only source of the port it actually bound and
-// the password it generated, so these parse its words rather than guessing.
-// All of it is pure so it can be tested against recorded output.
+// Stdout is the source of the port the server actually bound, so its words
+// are parsed rather than guessed. The password is deliberately NOT here: with
+// `--service` the server never prints it and only writes it to the service
+// file, which the handle polls instead. All of it is pure so it can be tested
+// against recorded output.
 
 /// `server listening on http://127.0.0.1:4196`
 ///

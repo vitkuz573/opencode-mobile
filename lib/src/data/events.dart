@@ -90,6 +90,11 @@ abstract final class Ev {
   static const toolSuccess = 'session.tool.success';
   static const toolFailed = 'session.tool.failed';
 
+  /// Emitted when an attempt fails and the server schedules another one. The
+  /// execution is still alive — this is the difference between "working" and
+  /// "stuck", and the client must show it instead of spinning silently.
+  static const retryScheduled = 'session.retry.scheduled';
+
   static const usageUpdated = 'session.usage.updated';
   static const permissionAsked = 'permission.asked';
   static const permissionReplied = 'permission.replied';
