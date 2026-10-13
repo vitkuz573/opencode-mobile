@@ -32,6 +32,9 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+# Gradle writes problem reports and caches under the module, not just at the
+# project root, and they are build output rather than source.
+android/build/
 
 # Symbolication related
 app.*.symbols
@@ -52,3 +55,4 @@ app.*.map.json
 *.png
 *.jpg
 _scratch/
+

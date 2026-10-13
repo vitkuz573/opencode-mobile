@@ -40,6 +40,9 @@ dependencies:
   intl: ^0.20.3
   mobile_scanner: ^7.4.2
   url_launcher: ^6.3.3
+  crypto: ^3.0.7
+  path_provider: ^2.1.6
+  qr_flutter: ^4.1.0
 
 dev_dependencies:
   flutter_test:
@@ -62,6 +65,12 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    # What the Android runtime is made of: version, source URLs and digests.
+    # Bundled so the app can say "there is an update" without a network call,
+    # and can still start an install when the device is offline.
+    - assets/runtime.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -20,6 +20,25 @@ String formatCost(double usd) {
   return '\$${usd.toStringAsFixed(2)}';
 }
 
+/// Formats a byte count for a download.
+///
+/// Decimal units, because that is what a mobile network plan and every app
+/// store in the world counts in. Saying "199 MB" when a file is 205 655 248
+/// bytes is the expectation people already have; saying "195.9 MiB" reads like
+/// the vendor is being clever.
+String formatBytes(int bytes) {
+  if (bytes < 1000) return '$bytes B';
+  const units = ['KB', 'MB', 'GB'];
+  var value = bytes / 1000;
+  var unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit++;
+  }
+  return '${value >= 100 ? value.toStringAsFixed(0) : value.toStringAsFixed(1)} '
+      '${units[unit]}';
+}
+
 String formatRelativeTime(int epochMillis, {DateTime? now}) {
   if (epochMillis == 0) return '';
   final reference = now ?? DateTime.now();

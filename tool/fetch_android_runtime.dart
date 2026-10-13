@@ -1,5 +1,5 @@
 // Assembles the OpenCode runtime needed to run a real OpenCode server on an
-// Android phone, and writes a manifest the app verifies downloads against.
+// Android phone, and writes the manifest the app installs from.
 //
 // Why this exists
 // ---------------
@@ -11,16 +11,20 @@
 // The fix is to ship the loader next to the binary and hand it the program as
 // an argument. `ld-musl-aarch64.so.1 <program> [args...]` is how the musl
 // loader behaves when it is executed directly, so nothing about the OpenCode
-// binary has to be modified. That keeps the artifact byte-identical to what npm
-// publishes, which means upgrades are "point at a newer version" and the
-// checksum still means something.
+// binary has to be modified.
 //
 // The one extra dependency is `libstdc++.so.6`, which Bun binaries link against.
 // Alpine publishes a musl build of it, along with the `libgcc_s.so.1` unwinder
 // that libstdc++ in turn needs.
 //
+// The manifest lists *archives* and what to take out of them, never a URL that
+// claims to be a file it is not. An earlier version pointed `bin/opencode` at
+// the npm tarball while recording the unpacked file's size, and every install
+// on a real device failed with "expected 205655248, got 95975965". The app
+// verifies both the archive and the file taken out of it.
+//
 // Usage:
-//   dart run tool/fetch_android_runtime.dart [--version 2.0.27] [--out DIR]
+//   dart run tool/fetch_android_runtime.dart [--version 2.0.28] [--out DIR]
 //
 // Assembled layout:
 //   <out>/bin/opencode
@@ -44,30 +48,26 @@ const _libgccApk = '$_alpine/libgcc-14.2.0-r4.apk';
 
 /// A downloaded archive, still on disk, plus the tree it was unpacked into.
 class _Downloaded {
-  const _Downloaded(this.archive, this.root);
+  const _Downloaded({
+    required this.key,
+    required this.url,
+    required this.archive,
+    required this.root,
+  });
 
+  final String key;
+  final String url;
   final File archive;
   final Directory root;
 }
 
-/// One file in the assembled runtime, and where it came from.
-class _Artifact {
-  const _Artifact({
-    required this.name,
-    required this.url,
-    required this.source,
-    required this.archivePath,
-  });
+/// One file in the assembled runtime: which archive holds it, and where inside.
+class _Output {
+  const _Output(this.name, this.key, this.entry);
 
-  /// Path relative to the runtime root, e.g. `lib/libstdc++.so.6`.
   final String name;
-  final String url;
-
-  /// Which download to pull the file out of.
-  final _Downloaded source;
-
-  /// Path inside that download's unpacked tree.
-  final String archivePath;
+  final String key;
+  final String entry;
 }
 
 Future<int> main(List<String> args) async {
@@ -78,78 +78,86 @@ Future<int> main(List<String> args) async {
   try {
     final tarball = '$_npm/-/cli-linux-arm64-musl-$version.tgz';
     stdout.writeln('opencode   $version');
-    stdout.writeln('  from $tarball');
-    final binary = await _fetch(tarball, temp);
 
-    stdout.writeln('  musl loader');
-    final loader = await _fetch(_muslApk, temp);
-    stdout.writeln('  libstdc++');
-    final stdcxx = await _fetch(_libstdcxxApk, temp);
-    stdout.writeln('  libgcc_s');
-    final libgcc = await _fetch(_libgccApk, temp);
+    final sources = <String, _Downloaded>{
+      'opencode': await _fetch('opencode', tarball, temp),
+      'musl': await _fetch('musl', _muslApk, temp),
+      'libstdcxx': await _fetch('libstdcxx', _libstdcxxApk, temp),
+      'libgcc': await _fetch('libgcc', _libgccApk, temp),
+    };
 
-    final specs = <_Artifact>[
-      _Artifact(
-        name: 'bin/opencode',
-        url: tarball,
-        source: binary,
-        archivePath: 'package/bin/opencode',
+    // Alpine ships `libstdc++.so.6` as a symlink to a versioned file. Tar
+    // extracts the symlink as an empty file on Windows, so the versioned name
+    // is spelled out and the loader is handed the real bytes.
+    final outputs = [
+      const _Output('bin/opencode', 'opencode', 'package/bin/opencode'),
+      const _Output(
+        'lib/ld-musl-aarch64.so.1',
+        'musl',
+        'lib/ld-musl-aarch64.so.1',
       ),
-      _Artifact(
-        name: 'lib/ld-musl-aarch64.so.1',
-        url: _muslApk,
-        source: loader,
-        archivePath: 'lib/ld-musl-aarch64.so.1',
+      const _Output(
+        'lib/libstdc++.so.6',
+        'libstdcxx',
+        'usr/lib/libstdc++.so.6.0.33',
       ),
-      // Alpine ships `libstdc++.so.6` as a symlink to a versioned file. Tar
-      // extracts the symlink as an empty file on Windows, so the versioned
-      // name is spelled out and the loader is handed the real bytes.
-      _Artifact(
-        name: 'lib/libstdc++.so.6',
-        url: _libstdcxxApk,
-        source: stdcxx,
-        archivePath: 'usr/lib/libstdc++.so.6.0.33',
-      ),
-      _Artifact(
-        name: 'lib/libgcc_s.so.1',
-        url: _libgccApk,
-        source: libgcc,
-        archivePath: 'usr/lib/libgcc_s.so.1',
-      ),
+      const _Output('lib/libgcc_s.so.1', 'libgcc', 'usr/lib/libgcc_s.so.1'),
     ];
 
+    final archives = <String, Object?>{};
+    for (final source in sources.values) {
+      archives[source.key] = {
+        'url': source.url,
+        'sha256': await _sha256(source.archive),
+        'size': source.archive.lengthSync(),
+      };
+    }
+
     final files = <String, Object?>{};
-    for (final spec in specs) {
-      final target = File('${out.path}/${spec.name}');
+    var unpackedTotal = 0;
+    for (final output in outputs) {
+      final target = File('${out.path}/${output.name}');
       // Only the file itself. Clearing the parent directory would take the
       // previously extracted siblings with it.
       if (target.existsSync()) target.deleteSync();
       target.parent.createSync(recursive: true);
-      await _extract(spec.source, spec.archivePath, target);
+      await _extract(sources[output.key]!, output.entry, target);
       final size = target.lengthSync();
-      files[spec.name] = <String, Object?>{
-        'url': spec.url,
+      unpackedTotal += size;
+      files[output.name] = {
+        'archive': output.key,
+        'entry': output.entry,
         'sha256': await _sha256(target),
         'size': size,
       };
-      stdout.writeln('  ${spec.name.padRight(24)} $size');
+      stdout.writeln('  ${output.name.padRight(24)} $size');
     }
 
     final manifest = const JsonEncoder.withIndent('  ').convert({
       'version': version,
       'launcher': 'lib/ld-musl-aarch64.so.1',
+      'archives': archives,
       'files': files,
     });
     File('${out.path}/runtime.json')
       ..parent.createSync(recursive: true)
       ..writeAsStringSync('$manifest\n');
 
-    stdout.writeln('\nruntime assembled in ${out.path}');
+    final downloadTotal = sources.values.fold<int>(
+      0,
+      (sum, source) => sum + source.archive.lengthSync(),
+    );
+    stdout.writeln(
+      '\ndownload ${_mb(downloadTotal)}, unpacked ${_mb(unpackedTotal)}',
+    );
+    stdout.writeln('runtime assembled in ${out.path}');
   } finally {
     temp.deleteSync(recursive: true);
   }
   return 0;
 }
+
+String _mb(int bytes) => '${(bytes / 1000000).toStringAsFixed(1)} MB';
 
 String? _flag(List<String> args, String name) {
   final index = args.indexOf(name);
@@ -158,13 +166,12 @@ String? _flag(List<String> args, String name) {
 
 /// Fetches and unpacks an archive into its own directory, so several archives
 /// can share one temporary folder without colliding.
-Future<_Downloaded> _fetch(String url, Directory temp) async {
-  final name = url.split('/').last.replaceAll('+', '-');
-  final archive = File('${temp.path}/$name');
-  final root = Directory('${temp.path}/$name.d');
+Future<_Downloaded> _fetch(String key, String url, Directory temp) async {
+  final archive = File('${temp.path}/$key.archive');
+  final root = Directory('${temp.path}/$key.d');
 
   if (!archive.existsSync()) {
-    stdout.write('  downloading $name ... ');
+    stdout.write('  downloading ${url.split('/').last} ... ');
     final client = HttpClient();
     try {
       final request = await client.getUrl(Uri.parse(url));
@@ -189,19 +196,15 @@ Future<_Downloaded> _fetch(String url, Directory temp) async {
   if (result.exitCode != 0) {
     throw StateError('tar -xf ${archive.path} failed: ${result.stderr}');
   }
-  return _Downloaded(archive, root);
+  return _Downloaded(key: key, url: url, archive: archive, root: root);
 }
 
 /// Pulls one file out of an unpacked archive and makes it executable. The file
-/// is moved rather than copied so a 195 MB binary is not duplicated on disk.
-Future<void> _extract(
-  _Downloaded source,
-  String entry,
-  File target,
-) async {
+/// is moved rather than copied so a 205 MB binary is not duplicated on disk.
+Future<void> _extract(_Downloaded source, String entry, File target) async {
   final from = File('${source.root.path}/$entry');
   if (!from.existsSync()) {
-    throw StateError('$entry missing from ${source.archive.path}');
+    throw StateError('$entry missing from ${source.url}');
   }
   await from.rename(target.path);
   if (!Platform.isWindows) {
@@ -209,9 +212,9 @@ Future<void> _extract(
   }
 }
 
-/// Minimal SHA-256 so the tool needs no dependencies. OpenCode ships as a
-/// single 195 MB file, so the digest is computed over a sliding 64-byte block
-/// instead of materialising the file.
+/// Minimal SHA-256 so the tool needs no dependencies. The opencode binary is
+/// 205 MB, so the digest is computed over a sliding 64-byte block instead of
+/// materialising the file.
 class _Sha256 {
   static const _k = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, //

@@ -15,18 +15,32 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "dev.vitkuz573.opencodemobile"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
-        // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
-        // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
-        // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+    }
+
+    packaging {
+        jniLibs {
+            // The musl loader ships inside the APK so Android extracts it to
+            // nativeLibraryDir. That is not packaging convenience, it is the
+            // whole trick.
+            //
+            // Android labels every file in an app's private directory
+            // `app_data_file` and denies `execute_no_trans` on it, so a binary
+            // fetched at runtime can be read but never started. Files that
+            // arrived inside the APK are labelled `apk_data_file`, where
+            // executing them is allowed. Only the loader, 723 KB, goes into the
+            // APK; the 205 MB server binary stays a download and is merely read
+            // by the loader.
+            //
+            // Legacy packaging is what makes the extraction happen at all.
+            // Without it the library is mapped straight out of the APK and there
+            // is no file on disk to execute.
+            useLegacyPackaging = true
+        }
     }
 
     buildTypes {

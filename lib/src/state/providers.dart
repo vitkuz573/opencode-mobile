@@ -8,6 +8,7 @@ import '../data/events.dart';
 import '../data/models.dart';
 import '../data/pairing.dart';
 import '../data/stats.dart';
+import 'local_server.dart';
 import 'profile_store.dart';
 
 enum ConnectionPhase { idle, connecting, connected, error }
@@ -116,6 +117,13 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
         knownProfiles: profiles,
       );
     } on ApiException catch (error) {
+      // A server that lives in this phone has to be started before it can be
+      // reached, and the user did not ask for a server that is not running -
+      // they opened the app. Restoring it is the whole point of having it on
+      // the device, so it is started here rather than presented as a failure.
+      final revived = await _reviveLocalProfile(active);
+      if (revived != null) return revived;
+
       ref.read(appLogProvider).error(
         'net',
         'could not restore ${active.displayHost}: ${error.message}',
@@ -127,6 +135,30 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
         knownProfiles: profiles,
       );
     }
+  }
+
+  /// Starts the phone's own server and reconnects, if [profile] points at it.
+  ///
+  /// Returns null when this is an ordinary remote server, or when the local
+  /// server cannot be started, so the caller falls through to the usual error
+  /// rather than inventing a new one.
+  Future<ConnectionState?> _reviveLocalProfile(ServerProfile profile) async {
+    // Only the phone's own server. Any other loopback address belongs to
+    // something else on the network, and starting a local process would not
+    // help it.
+    if (!PairingLink.isLoopback(profile.baseUrl)) return null;
+    final local = ref.read(localServerProvider.notifier);
+    // Whether a runtime is installed is read off the disk, and that read may
+    // still be in flight when the connection is restored. Deciding before it
+    // lands means treating an installed runtime as absent, and telling the user
+    // their own server does not exist.
+    if (local.state.loading) await local.refreshRuntime();
+    if (!local.state.isInstalled || local.state.status.isRunning) return null;
+    ref.read(appLogProvider).info('net', 'starting the server on this phone');
+    final started = await local.start();
+    if (!started) return null;
+    final ok = await connect(profile);
+    return ok ? state.value : null;
   }
 
   String _keyOf(ServerProfile profile) =>

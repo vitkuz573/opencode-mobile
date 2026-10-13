@@ -1,0 +1,52 @@
+{
+  "version": "2.0.28",
+  "launcher": "lib/ld-musl-aarch64.so.1",
+  "archives": {
+    "opencode": {
+      "url": "https://registry.npmjs.org/@opencode/cli-linux-arm64-musl/-/cli-linux-arm64-musl-2.0.28.tgz",
+      "sha256": "cf55d63d76b4b41e4a8c9449e6a5471d5c34459c93f91253fff21658253b174e",
+      "size": 95975965
+    },
+    "musl": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/musl-1.2.5-r11.apk",
+      "sha256": "721010e6bff908878d9c527428598661be59dde0d9f013f8431d01fd4dd16652",
+      "size": 417982
+    },
+    "libstdcxx": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libstdc++-14.2.0-r4.apk",
+      "sha256": "93dded5af4e42ca59a2e981ffc5acc59c5d7110cec4adaeb15b84dc224526b63",
+      "size": 906144
+    },
+    "libgcc": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libgcc-14.2.0-r4.apk",
+      "sha256": "7cfdc00f102d3b98fe563b31e7a59a7b7ab61850c1751915f34e419e83ef2653",
+      "size": 66943
+    }
+  },
+  "files": {
+    "bin/opencode": {
+      "archive": "opencode",
+      "entry": "package/bin/opencode",
+      "sha256": "d4e8acae3255971750ef22507e426dd7efb9b3281c1f83913eac7e476343f136",
+      "size": 205655248
+    },
+    "lib/ld-musl-aarch64.so.1": {
+      "archive": "musl",
+      "entry": "lib/ld-musl-aarch64.so.1",
+      "sha256": "44770ff3960d040e6023ff77b809def2e4123db85e064c311f4cfa45a05959f4",
+      "size": 723480
+    },
+    "lib/libstdc++.so.6": {
+      "archive": "libstdcxx",
+      "entry": "usr/lib/libstdc++.so.6.0.33",
+      "sha256": "1f1a71be4319632f743507ef7c6eaebaccad8d6f277055cf2c6b16b544f9f418",
+      "size": 2754992
+    },
+    "lib/libgcc_s.so.1": {
+      "archive": "libgcc",
+      "entry": "usr/lib/libgcc_s.so.1",
+      "sha256": "69c45f16064b7b61b9a3d64c37395d13368a8fe719745d49e9508ec650fea971",
+      "size": 133008
+    }
+  }
+}

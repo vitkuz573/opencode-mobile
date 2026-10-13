@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/api.dart';
 import '../data/pairing.dart';
+import '../runtime/local_server.dart';
+import '../state/local_server.dart';
 import '../state/providers.dart';
+import 'local_server_screen.dart';
 import 'qr_scanner_screen.dart';
 import 'widgets.dart';
 
@@ -26,59 +29,69 @@ class ServersScreen extends ConsumerWidget {
         .orderedProfiles();
     final activeUrl = connection?.profile?.baseUrl;
     final busy = connection?.phase == ConnectionPhase.connecting;
+    final local = ref.watch(localServerProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Servers')),
-      body: profiles.isEmpty
-          ? ListView(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
-              children: [
-                EmptyState(
-                  icon: Icons.dns_outlined,
-                  title: 'No servers yet',
-                  message: 'Add one to get started.',
-                  action: FilledButton.icon(
-                    onPressed: () => _addServer(context),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add a server'),
-                  ),
-                ),
-              ],
-            )
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
-              children: [
-                for (final profile in profiles)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: _ServerCard(
-                      profile: profile,
-                      active: profile.baseUrl == activeUrl,
-                      busy: busy,
-                      onConnect: () => _connect(context, ref, profile),
-                      onRename: () => _rename(context, ref, profile),
-                      onDefault: () =>
-                          ref.read(connectionProvider.notifier).setDefault(profile),
-                      onForget: () => _forget(context, ref, profile),
-                    ),
-                  ),
-                const SizedBox(height: 8),
-                Text(
-                  'Servers are matched by address. Connecting again with a '
-                  'different password replaces the stored one.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
+        children: [
+          // First, and separate from the saved servers: it is not another host
+          // to connect to, it is the one already in your hand.
+          _ThisPhoneCard(local: local),
+          const SizedBox(height: 18),
+          if (profiles.isNotEmpty) ...[
+            Text(
+              'Saved servers',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+                letterSpacing: 1.1,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-      floatingActionButton: profiles.isEmpty
-          ? null
-          : FloatingActionButton.extended(
-              onPressed: () => _addServer(context),
-              icon: const Icon(Icons.add),
-              label: const Text('Add'),
+            const SizedBox(height: 10),
+          ],
+          for (final profile in profiles)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _ServerCard(
+                profile: profile,
+                active: profile.baseUrl == activeUrl,
+                busy: busy,
+                onConnect: () => _connect(context, ref, profile),
+                onRename: () => _rename(context, ref, profile),
+                onDefault: () =>
+                    ref.read(connectionProvider.notifier).setDefault(profile),
+                onForget: () => _forget(context, ref, profile),
+              ),
             ),
+          if (profiles.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'No saved servers yet. Add one to reach a machine on your '
+                'network or through a pairing link.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          const SizedBox(height: 8),
+          Text(
+            'Servers are matched by address. Connecting again with a '
+            'different password replaces the stored one.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _addServer(context),
+        icon: const Icon(Icons.add),
+        label: const Text('Add'),
+      ),
     );
   }
 
@@ -189,6 +202,164 @@ class ServersScreen extends ConsumerWidget {
     );
     if (confirmed != true) return;
     await ref.read(connectionProvider.notifier).forget(profile);
+  }
+}
+
+/// The server that is this device.
+///
+/// It sits above the saved servers because it is not one of them: there is
+/// nothing to type, nothing to scan and nothing to go wrong. Tapping it either
+/// starts what is already installed, or explains the one-time download and asks
+/// for it.
+class _ThisPhoneCard extends ConsumerWidget {
+  const _ThisPhoneCard({required this.local});
+
+  final LocalServerState local;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final status = local.status;
+
+    final (icon, color, headline, detail) = switch (local) {
+      _ when local.loading => (
+        Icons.smartphone_outlined,
+        scheme.onSurfaceVariant,
+        'This phone',
+        'Checking…',
+      ),
+      _ when local.install.running => (
+        Icons.downloading_rounded,
+        scheme.primary,
+        'This phone',
+        local.install.replacing
+            ? 'Updating OpenCode…'
+            : 'Installing OpenCode…',
+      ),
+      _ when status.phase == LocalServerPhase.running => (
+        Icons.dns_rounded,
+        Colors.green.shade600,
+        'This phone',
+        'Running on port ${status.port}',
+      ),
+      _ when status.phase == LocalServerPhase.failed => (
+        Icons.error_outline_rounded,
+        scheme.error,
+        'This phone',
+        'Did not start — tap for the reason',
+      ),
+      _ when !local.isInstalled => (
+        Icons.smartphone_outlined,
+        scheme.onSurfaceVariant,
+        'This phone',
+        'Run OpenCode on this device',
+      ),
+      _ when local.canUpdate => (
+        Icons.upgrade_rounded,
+        scheme.tertiary,
+        'This phone',
+        'OpenCode ${local.latestVersion} is available',
+      ),
+      _ => (
+        Icons.smartphone_outlined,
+        scheme.onSurfaceVariant,
+        'This phone',
+        'OpenCode ${local.installedVersion} installed, not running',
+      ),
+    };
+
+    return Material(
+      color: scheme.primaryContainer.withValues(alpha: 0.28),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const LocalServerScreen()),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+          child: Row(
+            children: [
+              Icon(icon, size: 22, color: color),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      headline,
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      detail,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Explains why there are no fields when "On this phone" is chosen.
+///
+/// An empty form looks broken. This says the address and the password are
+/// already known, which is the whole point of the mode.
+class _PhoneNote extends StatelessWidget {
+  const _PhoneNote();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.lock_open_rounded, size: 18, color: scheme.primary),
+              const SizedBox(width: 10),
+              Text(
+                'Nothing to type',
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'The address is this device, and the password is whatever the '
+            'server printed when it started. Both are already known here.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -593,7 +764,7 @@ class AddServerScreen extends ConsumerStatefulWidget {
   ConsumerState<AddServerScreen> createState() => _AddServerScreenState();
 }
 
-enum _Mode { password, pairing }
+enum _Mode { password, phone, pairing }
 
 class _AddServerScreenState extends ConsumerState<AddServerScreen> {
   late final TextEditingController _url = TextEditingController(
@@ -633,6 +804,14 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
             description: 'The password printed when the server started.',
             selected: _mode == _Mode.password,
             onTap: () => setState(() => _mode = _Mode.password),
+          ),
+          const SizedBox(height: 10),
+          _ModeOption(
+            icon: Icons.smartphone_outlined,
+            title: 'On this phone',
+            description: _phoneHint(ref.watch(localServerProvider)),
+            selected: _mode == _Mode.phone,
+            onTap: _openLocalServer,
           ),
           const SizedBox(height: 10),
           _ModeOption(
@@ -697,7 +876,7 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
                 ),
               ],
             )
-          else
+          else if (_mode == _Mode.pairing)
             _FieldGroup(
               children: [
                 _SoftField(
@@ -717,19 +896,24 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
                   ),
                 ),
               ],
-            ),
+            )
+          else
+            const _PhoneNote(),
 
           const SizedBox(height: 18),
 
           // Last, because it is the only optional field: the name is garnish
-          // for the list, the address and the secret are what connect.
-          _SoftField(
-            controller: _label,
-            label: 'Name',
-            hint: 'Optional — Work, home, VPS',
-            icon: Icons.label_outline,
-          ),
-          const SizedBox(height: 10),
+          // for the list, the address and the secret are what connect. The
+          // phone's own server is already named.
+          if (_mode != _Mode.phone) ...[
+            _SoftField(
+              controller: _label,
+              label: 'Name',
+              hint: 'Optional — Work, home, VPS',
+              icon: Icons.label_outline,
+            ),
+            const SizedBox(height: 10),
+          ],
           Text(
             'Saved servers are matched by address, so adding the same host '
             'again replaces the stored one.',
@@ -744,10 +928,54 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
       // reach on a tall form.
       bottomNavigationBar: _SubmitBar(
         busy: _busy,
-        label: _busy ? 'Connecting…' : 'Add and connect',
+        label: _busy
+            ? 'Connecting…'
+            : switch (_mode) {
+                _Mode.phone => 'Set up the phone server',
+                _Mode.pairing => 'Add and connect',
+                _Mode.password => 'Add and connect',
+              },
         onPressed: _busy ? null : _submit,
       ),
     );
+  }
+
+  /// The line under "On this phone", which is a status rather than a
+  /// description: what it says depends on whether the runtime is there yet.
+  String _phoneHint(LocalServerState local) {
+    if (local.loading) return 'Checking what is installed…';
+    if (local.install.running) {
+      return local.install.replacing
+          ? 'Updating OpenCode…'
+          : 'Installing OpenCode…';
+    }
+    if (local.status.phase == LocalServerPhase.running) {
+      return 'Running on port ${local.status.port}.';
+    }
+    if (!local.isInstalled) {
+      final manifest = ref.read(runtimeManifestProvider).value;
+      return manifest == null
+          ? 'Not installed.'
+          : 'Not installed. ${formatBytes(manifest.downloadBytes)} to download.';
+    }
+    if (local.canUpdate) {
+      return 'OpenCode ${local.latestVersion} is available.';
+    }
+    return 'OpenCode ${local.installedVersion} is installed.';
+  }
+
+  /// Leaves this screen for the phone-server page, which owns the install, the
+  /// start, and the credentials.
+  Future<void> _openLocalServer() async {
+    final navigator = Navigator.of(context);
+    final added = await navigator.push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => const LocalServerScreen(),
+      ),
+    );
+    if (added == true && mounted) {
+      navigator.pop();
+    }
   }
 
   Future<void> _scanQr() async {
@@ -881,6 +1109,13 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
     final controller = ref.read(connectionProvider.notifier);
     final navigator = Navigator.of(context);
     final label = _label.text.trim();
+
+    // The phone's own server has no fields: the app knows its address and can
+    // start it, so there is nothing here to fill in.
+    if (_mode == _Mode.phone) {
+      await _openLocalServer();
+      return;
+    }
 
     ServerProfile? profile;
     setState(() {
