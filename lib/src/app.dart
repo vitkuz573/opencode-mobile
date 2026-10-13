@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'ui/chat_screen.dart';
 import 'ui/connect_screen.dart';
 import 'ui/home_screen.dart';
+import 'ui/lock_screen.dart';
 import 'data/models.dart';
+import 'state/app_lock.dart';
 import 'state/providers.dart';
 
 void main() {
@@ -27,13 +29,60 @@ class OpenCodeApp extends StatelessWidget {
   }
 }
 
-/// Switches between the connect screen and the session list. Routing lives in
-/// one place so "am I connected?" is never answered twice.
-class RootGate extends ConsumerWidget {
+/// Switches between the lock screen, the connect screen and the session list.
+/// Routing lives in one place so "am I connected?" is never answered twice,
+/// and "may I look?" is never answered anywhere else.
+class RootGate extends ConsumerStatefulWidget {
   const RootGate({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<RootGate> createState() => _RootGateState();
+}
+
+class _RootGateState extends ConsumerState<RootGate>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // A phone left on a desk must not stay open: backgrounding relocks.
+    // Inactive counts, because the OS can hide us without a full pause.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      ref.read(appLockProvider.notifier).lock();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lockAsync = ref.watch(appLockProvider);
+    // The lock starts closed: while its persisted switch is still loading,
+    // nothing behind it renders, not even for a frame.
+    if (lockAsync.isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    final lock = lockAsync.value ?? const AppLockState();
+    if (lock.enabled && !lock.unlocked) {
+      return LockScreen(
+        capability:
+            ref.watch(appLockCapabilityProvider).value ??
+            AppLockCapability.none,
+        onUnlock: () => ref
+            .read(appLockProvider.notifier)
+            .authenticateNow(reason: 'Unlock OpenCode'),
+      );
+    }
+
     final connection = ref.watch(connectionProvider);
 
     return connection.when(

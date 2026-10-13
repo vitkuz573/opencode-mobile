@@ -1,17 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/api.dart';
 import '../state/account.dart';
+import '../state/app_lock.dart';
 import '../state/providers.dart';
 import 'account_screen.dart';
 import 'log_viewer_screen.dart';
-import 'servers_screen.dart';
-import 'widgets.dart';
 
-/// Everything that is not part of a task: account, servers, diagnostics and
-/// what this build is.
+/// Everything that is not part of a task: the account, the app lock,
+/// diagnostics and what this build is.
+///
+/// Deliberately nothing about servers: there can be many of them, so
+/// anything per-server lives on the server's own card in the server list.
+/// Settings that named one server were a lie the moment a second was saved.
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
@@ -19,11 +20,11 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final connection = ref.watch(connectionProvider).value;
     final log = ref.watch(logProvider);
     ref.watch(appLogRevisionProvider);
     final signedIn = ref.watch(accountProvider).value is AccountSignedIn;
-    final profile = connection?.profile;
+    final lock = ref.watch(appLockProvider).value ?? const AppLockState();
+    final lockCapability = ref.watch(appLockCapabilityProvider).value;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -52,62 +53,27 @@ class SettingsScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 22),
 
-          const _SectionLabel('Servers'),
+          const _SectionLabel('Security'),
           _Card(
             children: [
               _Row(
-                icon: Icons.dns_outlined,
-                title: 'Saved servers',
-                subtitle: profile == null
-                    ? 'None connected'
-                    : profile.displayName,
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const ServersScreen(),
-                  ),
+                icon: Icons.fingerprint,
+                title: 'App lock',
+                subtitle: lock.enabled
+                    ? switch (lockCapability) {
+                        AppLockCapability.biometrics =>
+                          'Fingerprint or device PIN',
+                        AppLockCapability.deviceCredential => 'Device PIN',
+                        _ => 'On',
+                      }
+                    : 'Off',
+                trailing: Switch.adaptive(
+                  value: lock.enabled,
+                  onChanged: lock.busy
+                      ? null
+                      : (value) => _toggleAppLock(context, ref, value),
                 ),
               ),
-              const _Divider(),
-              _Row(
-                icon: Icons.link,
-                title: 'Endpoint',
-                subtitle: profile?.displayHost ?? 'not connected',
-                // The address is already shown above; nothing to copy when there
-                // is no address.
-                trailing: profile == null
-                    ? null
-                    : IconButton(
-                        tooltip: 'Copy address',
-                        icon: const Icon(Icons.copy, size: 18),
-                        onPressed: () {
-                          Clipboard.setData(
-                            ClipboardData(text: profile.baseUrl),
-                          );
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Address copied')),
-                          );
-                        },
-                      ),
-              ),
-              if (profile != null) ...[
-                const _Divider(),
-                _Row(
-                  icon: Icons.lock_outline,
-                  title: 'Authentication',
-                  subtitle: profile.authMode == AuthMode.basic
-                      ? 'Server password'
-                      : 'Pairing session, 30 day lifetime',
-                ),
-                const _Divider(),
-                _Row(
-                  icon: Icons.timer_outlined,
-                  title: 'Last used',
-                  subtitle: profile.lastUsedAt == 0
-                      ? 'Never'
-                      : formatRelativeTime(profile.lastUsedAt),
-                ),
-              ],
             ],
           ),
           const SizedBox(height: 22),
@@ -157,15 +123,9 @@ class SettingsScreen extends ConsumerWidget {
               ),
               const _Divider(),
               _Row(
-                icon: Icons.fingerprint,
+                icon: Icons.apps_outlined,
                 title: 'Package',
                 subtitle: 'dev.vitkuz573.opencodemobile',
-              ),
-              const _Divider(),
-              _Row(
-                icon: Icons.dns_outlined,
-                title: 'Server version',
-                subtitle: connection?.info?.version ?? 'not connected',
               ),
             ],
           ),
@@ -197,6 +157,29 @@ class SettingsScreen extends ConsumerWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Flips the app lock after proving it is the owner. A refusal is either "no
+/// biometrics or PIN on this device" (enabling) or "not recognized"
+/// (either way); the switch stays where it was.
+Future<void> _toggleAppLock(
+  BuildContext context,
+  WidgetRef ref,
+  bool value,
+) async {
+  final ok = await ref.read(appLockProvider.notifier).setEnabled(value);
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          value
+              ? 'Could not turn on the app lock: no fingerprint or PIN '
+                  'set up on this device'
+              : 'Not recognized. The app lock stays on.',
+        ),
       ),
     );
   }

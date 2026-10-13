@@ -18,9 +18,10 @@ class ProfileStore {
           const FlutterSecureStorage();
 
   static const _key = 'opencode.profiles.v1';
-  static const _activeKey = 'opencode.active.v1';
   static const _hostsKey = 'opencode.remoteHosts.v1';
   static const _consoleKey = 'opencode.console.v1';
+  static const _appLockKey = 'opencode.appLock.v1';
+  static const _localPortKey = 'opencode.localPort.v1';
 
   final FlutterSecureStorage _storage;
 
@@ -45,8 +46,6 @@ class ProfileStore {
       value: jsonEncode(profiles.map((p) => p.toJson()).toList()),
     );
   }
-
-  Future<String?> loadActiveBaseUrl() => _storage.read(key: _activeKey);
 
   /// Addresses the server has advertised in /api/info and that a phone could
   /// actually reach, newest first.
@@ -97,6 +96,32 @@ class ProfileStore {
     await _storage.write(key: _hostsKey, value: jsonEncode(trimmed));
   }
 
-  Future<void> saveActiveBaseUrl(String baseUrl) =>
-      _storage.write(key: _activeKey, value: baseUrl);
+  // --- app lock ------------------------------------------------------------
+
+  /// Whether the app asks for the fingerprint (or the device PIN as a
+  /// fallback) before showing anything. A plain flag next to the secrets it
+  /// guards: anyone past the lock already owns the secrets, and anyone short
+  /// of it never reaches the code that reads them.
+  Future<bool> loadAppLockEnabled() async {
+    return await _storage.read(key: _appLockKey) == '1';
+  }
+
+  Future<void> saveAppLockEnabled(bool enabled) {
+    return _storage.write(key: _appLockKey, value: enabled ? '1' : '0');
+  }
+
+  // --- phone server ----------------------------------------------------------
+
+  /// The port the phone's server used last. Restarts prefer it when it is
+  /// free, so the address — and every saved profile pointing at it — survives
+  /// a restart instead of going stale on a new random port.
+  Future<int?> loadLocalPort() async {
+    final port = int.tryParse(await _storage.read(key: _localPortKey) ?? '');
+    if (port == null || port < 1 || port > 65535) return null;
+    return port;
+  }
+
+  Future<void> saveLocalPort(int port) {
+    return _storage.write(key: _localPortKey, value: '$port');
+  }
 }

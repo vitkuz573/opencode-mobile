@@ -585,9 +585,9 @@ class _RunningViewState extends ConsumerState<_RunningView> {
             if (workspace != null) {
               ref.read(selectedDirectoryProvider.notifier).select(workspace);
             }
-            // `true` tells an "Add a server" screen underneath that the work is
-            // done and it should close too.
-            if (navigator.canPop()) navigator.pop(true);
+            // A connected server means the session list, wherever this screen
+            // was opened from.
+            navigator.popUntil((route) => route.isFirst);
           },
         ),
         const SizedBox(height: 10),

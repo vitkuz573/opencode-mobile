@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/api.dart';
@@ -59,9 +60,11 @@ class ServersScreen extends ConsumerWidget {
                 active: profile.baseUrl == activeUrl,
                 busy: busy,
                 onConnect: () => _connect(context, ref, profile),
+                onEnter: () => Navigator.of(
+                  context,
+                ).popUntil((route) => route.isFirst),
                 onRename: () => _rename(context, ref, profile),
-                onDefault: () =>
-                    ref.read(connectionProvider.notifier).setDefault(profile),
+                onCopyAddress: () => _copyAddress(context, profile),
                 onForget: () => _forget(context, ref, profile),
               ),
             ),
@@ -121,7 +124,10 @@ class ServersScreen extends ConsumerWidget {
       );
       return;
     }
-    navigator.pop();
+    // A connected server means the session list. The list this came from is
+    // done: leaving it on top is what made tapping a server look like it did
+    // nothing.
+    navigator.popUntil((route) => route.isFirst);
   }
 
   Future<void> _rename(
@@ -175,8 +181,16 @@ class ServersScreen extends ConsumerWidget {
     await ref.read(connectionProvider.notifier).rename(profile, result);
   }
 
-  Future<void> _forget(
-    BuildContext context,
+  /// Copies the address for pasting elsewhere. The card shows the host, but a
+  /// host is not a URL you can hand to someone.
+  void _copyAddress(BuildContext context, ServerProfile profile) {
+    Clipboard.setData(ClipboardData(text: profile.baseUrl));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Address copied')),
+    );
+  }
+
+  Future<void> _forget(    BuildContext context,
     WidgetRef ref,
     ServerProfile profile,
   ) async {
@@ -372,8 +386,9 @@ class _ServerCard extends StatelessWidget {
     required this.active,
     required this.busy,
     required this.onConnect,
+    required this.onEnter,
     required this.onRename,
-    required this.onDefault,
+    required this.onCopyAddress,
     required this.onForget,
   });
 
@@ -381,8 +396,12 @@ class _ServerCard extends StatelessWidget {
   final bool active;
   final bool busy;
   final VoidCallback onConnect;
+
+  /// The active server is already open; tapping it goes there instead of
+  /// reconnecting. A card that ignores taps made the connection look broken.
+  final VoidCallback onEnter;
   final VoidCallback onRename;
-  final VoidCallback onDefault;
+  final VoidCallback onCopyAddress;
   final VoidCallback onForget;
 
   @override
@@ -396,7 +415,7 @@ class _ServerCard extends StatelessWidget {
           : scheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
-        onTap: busy || active ? null : onConnect,
+        onTap: busy ? null : (active ? onEnter : onConnect),
         borderRadius: BorderRadius.circular(14),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
@@ -463,7 +482,7 @@ class _ServerCard extends StatelessWidget {
                 tooltip: 'Server options',
                 onSelected: (value) => switch (value) {
                   'rename' => onRename(),
-                  'default' => onDefault(),
+                  'copy' => onCopyAddress(),
                   'forget' => onForget(),
                   _ => null,
                 },
@@ -477,11 +496,11 @@ class _ServerCard extends StatelessWidget {
                     ),
                   ),
                   const PopupMenuItem(
-                    value: 'default',
+                    value: 'copy',
                     child: ListTile(
                       contentPadding: EdgeInsets.zero,
-                      leading: Icon(Icons.star_outline),
-                      title: Text('Open on launch'),
+                      leading: Icon(Icons.copy_outlined),
+                      title: Text('Copy address'),
                     ),
                   ),
                   const PopupMenuDivider(),
@@ -1202,7 +1221,8 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
     messenger.showSnackBar(
       SnackBar(content: Text('Added ${target.displayName}')),
     );
-    navigator.pop();
+    // A connected server means the session list, not the form behind it.
+    navigator.popUntil((route) => route.isFirst);
   }
 }
 

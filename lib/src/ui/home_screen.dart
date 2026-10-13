@@ -44,7 +44,16 @@ class HomeScreen extends ConsumerWidget {
 
 /// The overflow menu, shared by every screen that has the same header.
 class HomeMenu extends ConsumerWidget {
-  const HomeMenu({super.key});
+  const HomeMenu({super.key, this.connected = true});
+
+  /// Whether a server is connected.
+  ///
+  /// Usage and "Disconnect" are actions on a live connection, so they are left
+  /// out before one exists. Settings, Servers and the account all work with
+  /// nothing connected, and they are the only routes to them: the connect
+  /// screen used to carry no menu at all, which meant a fresh install could not
+  /// open settings until a server had been added and connected.
+  final bool connected;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -84,31 +93,33 @@ class HomeMenu extends ConsumerWidget {
             title: Text('Servers'),
           ),
         ),
-        const PopupMenuItem(
-          value: 'usage',
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.insights_outlined),
-            title: Text('Usage'),
+        if (connected) ...[
+          const PopupMenuItem(
+            value: 'usage',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.insights_outlined),
+              title: Text('Usage'),
+            ),
           ),
-        ),
-        const PopupMenuItem(
-          value: 'account',
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.cloud_outlined),
-            title: Text('opencode.ai account'),
+          const PopupMenuItem(
+            value: 'account',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.cloud_outlined),
+              title: Text('opencode.ai account'),
+            ),
           ),
-        ),
-        const PopupMenuDivider(),
-        const PopupMenuItem(
-          value: 'disconnect',
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.logout),
-            title: Text('Disconnect'),
+          const PopupMenuDivider(),
+          const PopupMenuItem(
+            value: 'disconnect',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.logout),
+              title: Text('Disconnect'),
+            ),
           ),
-        ),
+        ],
       ],
     );
   }

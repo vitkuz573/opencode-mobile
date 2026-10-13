@@ -1,11 +1,35 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide ConnectionState;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencode_mobile/src/data/models.dart';
+import 'package:opencode_mobile/src/state/account.dart';
+import 'package:opencode_mobile/src/state/providers.dart';
 import 'package:opencode_mobile/src/ui/chat_screen.dart';
+import 'package:opencode_mobile/src/ui/connect_screen.dart';
 import 'package:opencode_mobile/src/ui/home_screen.dart';
 import 'package:opencode_mobile/src/ui/widgets.dart';
 
 Widget host(Widget child) => MaterialApp(home: Scaffold(body: child));
+
+/// A connection that is alive in the graph but connected to nothing, so tests
+/// exercise the fresh-install state without touching secure storage.
+class _IdleConnection extends ConnectionController {
+  @override
+  Future<ConnectionState> build() async => const ConnectionState();
+}
+
+class _SignedOutAccount extends AccountController {
+  @override
+  Future<AccountState> build() async => const AccountSignedOut();
+}
+
+ProviderScope disconnectedHost(Widget child) => ProviderScope(
+  overrides: [
+    connectionProvider.overrideWith(_IdleConnection.new),
+    accountProvider.overrideWith(_SignedOutAccount.new),
+  ],
+  child: MaterialApp(home: child),
+);
 
 void main() {
   group('formatting', () {
@@ -269,6 +293,70 @@ void main() {
       expect(find.text('Cannot load sessions'), findsOneWidget);
       expect(find.text('network down'), findsOneWidget);
       expect(find.text('Retry'), findsOneWidget);
+    });
+  });
+
+  group('HomeMenu', () {
+    Future<void> openMenu(
+      WidgetTester tester, {
+      required bool connected,
+    }) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              appBar: AppBar(actions: [HomeMenu(connected: connected)]),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.byTooltip('Menu'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'offers settings and servers but no connection actions when nothing '
+      'is connected',
+      (tester) async {
+        await openMenu(tester, connected: false);
+
+        expect(find.text('Settings'), findsOneWidget);
+        expect(find.text('Servers'), findsOneWidget);
+        expect(find.text('Usage'), findsNothing);
+        expect(find.text('Disconnect'), findsNothing);
+      },
+    );
+
+    testWidgets('offers the full menu once connected', (tester) async {
+      await openMenu(tester, connected: true);
+
+      expect(find.text('Settings'), findsOneWidget);
+      expect(find.text('Servers'), findsOneWidget);
+      expect(find.text('Usage'), findsOneWidget);
+      expect(find.text('opencode.ai account'), findsOneWidget);
+      expect(find.text('Disconnect'), findsOneWidget);
+    });
+  });
+
+  group('ConnectScreen', () {
+    testWidgets('reaches settings and servers with nothing saved',
+        (tester) async {
+      await tester.pumpWidget(
+        disconnectedHost(const ConnectScreen()),
+      );
+      await tester.pump();
+
+      // The menu is the only route to settings before a server exists.
+      expect(find.byType(HomeMenu), findsOneWidget);
+      // The server list is reachable even with nothing saved yet.
+      expect(find.text('Saved'), findsOneWidget);
+      expect(find.text('Manage'), findsOneWidget);
+      expect(find.text('Nothing saved yet.'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Menu'));
+      await tester.pumpAndSettle();
+      expect(find.text('Settings'), findsOneWidget);
+      expect(find.text('Servers'), findsOneWidget);
     });
   });
 }

@@ -84,49 +84,12 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
 
   @override
   Future<ConnectionState> build() async {
-    final store = ref.read(profileStoreProvider);
-    final profiles = await store.loadAll();
-    final activeUrl = await store.loadActiveBaseUrl();
-
-    ServerProfile? active;
-    for (final profile in profiles) {
-      if (profile.baseUrl == activeUrl) active = profile;
-    }
-    active ??= profiles.isNotEmpty ? profiles.first : null;
-
-    if (active == null) {
-      return ConnectionState(knownProfiles: profiles);
-    }
-
-    // Try to restore the previous session. A failure is not fatal — the connect
-    // screen lets the user retry or edit the profile.
-    try {
-      final info = await apiFor(active).info();
-      // Restoring a previous connection is a connection too: the addresses it
-      // advertises are the ones a later pairing link can fall back to.
-      await _rememberHosts(info);
-      ref.read(appLogProvider).info(
-        'net',
-        'restored ${active.displayHost}, server ${info.version}',
-      );
-      return ConnectionState(
-        phase: ConnectionPhase.connected,
-        profile: active,
-        info: info,
-        knownProfiles: profiles,
-      );
-    } on ApiException catch (error) {
-      ref.read(appLogProvider).error(
-        'net',
-        'could not restore ${active.displayHost}: ${error.message}',
-      );
-      return ConnectionState(
-        phase: ConnectionPhase.error,
-        profile: active,
-        error: error.message,
-        knownProfiles: profiles,
-      );
-    }
+    // No auto-connect: the launch screen is a choice, not a resumption. A
+    // server that opens itself on startup is a server the user did not ask
+    // for, so every launch starts disconnected and the saved list is what
+    // remembers, not what connects.
+    final profiles = await ref.read(profileStoreProvider).loadAll();
+    return ConnectionState(knownProfiles: profiles);
   }
 
   String _keyOf(ServerProfile profile) =>
@@ -174,7 +137,6 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
       await _rememberHosts(info);
       log.info('net', 'connected to ${stamped.displayHost}, '
           'server ${info.version}');
-      await ref.read(profileStoreProvider).saveActiveBaseUrl(stamped.baseUrl);
       state = AsyncData(
         ConnectionState(
           phase: ConnectionPhase.connected,
@@ -244,11 +206,6 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
         knownProfiles: updated,
       ),
     );
-  }
-
-  /// Makes a server the one restored on launch.
-  Future<void> setDefault(ServerProfile profile) async {
-    await ref.read(profileStoreProvider).saveActiveBaseUrl(profile.baseUrl);
   }
 
   /// Orders the list the way a person scans it: the server in use first, then

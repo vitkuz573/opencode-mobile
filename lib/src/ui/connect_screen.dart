@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/account.dart';
 import '../state/providers.dart';
 import 'account_screen.dart';
+import 'home_screen.dart';
 import 'servers_screen.dart';
 
 /// Shown when nothing is connected.
@@ -12,6 +13,10 @@ import 'servers_screen.dart';
 /// The form for adding a server lives in [AddServerScreen]; this screen is only
 /// the way in, so that connecting and managing saved servers stay separate
 /// jobs instead of one long form with a list stapled underneath.
+///
+/// It carries the same overflow menu as the connected screens. That menu is the
+/// only route to settings, the server list and the logs, so leaving it out here
+/// locked all three behind having a server already.
 class ConnectScreen extends ConsumerWidget {
   const ConnectScreen({super.key});
 
@@ -26,7 +31,12 @@ class ConnectScreen extends ConsumerWidget {
     final signedIn = ref.watch(accountProvider).value is AccountSignedIn;
 
     return Scaffold(
+      // No title: the screen already names itself in the body, and a second
+      // copy of the same words above it would be noise.
+      appBar: AppBar(actions: const [HomeMenu(connected: false)]),
       body: SafeArea(
+        // The app bar has already claimed the top inset.
+        top: false,
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 480),
@@ -89,27 +99,38 @@ class ConnectScreen extends ConsumerWidget {
                   ),
                 ),
 
-                if (profiles.isNotEmpty) ...[
-                  const SizedBox(height: 28),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Saved',
-                          style: theme.textTheme.titleSmall,
+                // Shown whether or not anything is saved. The header row is the
+                // only route to the server list, and hiding it while the list
+                // was empty meant a fresh install could not reach it — you had
+                // to add a server to be allowed to manage servers.
+                const SizedBox(height: 28),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Saved',
+                        style: theme.textTheme.titleSmall,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const ServersScreen(),
                         ),
                       ),
-                      TextButton(
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => const ServersScreen(),
-                          ),
-                        ),
-                        child: const Text('Manage'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
+                      child: const Text('Manage'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                if (profiles.isEmpty)
+                  Text(
+                    'Nothing saved yet.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  )
+                else ...[
                   for (final profile in profiles.take(3))
                     ListTile(
                       contentPadding: EdgeInsets.zero,
