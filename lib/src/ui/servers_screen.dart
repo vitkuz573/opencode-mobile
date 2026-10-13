@@ -419,10 +419,10 @@ class _ModeOption extends StatelessWidget {
   }
 }
 
-/// Fields sitting on one shared surface, with no border of their own.
+/// Stacks the fields with consistent spacing.
 ///
-/// The app theme fills every field *and* outlines it, so a stack of boxes
-/// read as nesting rather than as one form.
+/// No shared surface: each field carries its own border, and putting bordered
+/// fields inside a filled group is what produced the nesting before.
 class _FieldGroup extends StatelessWidget {
   const _FieldGroup({required this.children});
 
@@ -430,16 +430,14 @@ class _FieldGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Column(children: children),
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < children.length; i++) ...[
+          if (i > 0) const SizedBox(height: 12),
+          children[i],
+        ],
+      ],
     );
   }
 }
@@ -469,8 +467,15 @@ class _SoftField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+    final scheme = Theme.of(context).colorScheme;
+    // Without a visible edge a text field stops looking like something you can
+    // tap, so the border is kept and only the theme's fill-plus-outline
+    // doubling is dropped.
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
       child: TextField(
         controller: controller,
         obscureText: obscure,
@@ -484,13 +489,18 @@ class _SoftField extends StatelessWidget {
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
+          hintStyle: TextStyle(color: scheme.onSurfaceVariant),
           prefixIcon: icon == null ? null : Icon(icon, size: 19),
+          prefixIconColor: scheme.onSurfaceVariant,
           filled: false,
           border: InputBorder.none,
           enabledBorder: InputBorder.none,
           focusedBorder: InputBorder.none,
           isDense: true,
-          contentPadding: EdgeInsets.symmetric(vertical: 14),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 16,
+          ),
         ),
       ),
     );
