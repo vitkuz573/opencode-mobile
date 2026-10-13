@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The server this app talks to usually runs on the user's own machine, on a
+  LAN address with no certificate. Android blocks cleartext by default from
+  API 28, so it is permitted here deliberately.
+
+  Scope of the risk: traffic stays on the USB tunnel, the LAN, or inside the
+  end-to-end encrypted OpenTunnel. Anyone who can read it also needs the
+  server password, which is the same credential Basic auth already relies on.
+  Deployments that cross an untrusted network should pair over the remote
+  tunnel and remove this file.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
