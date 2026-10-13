@@ -95,6 +95,14 @@ class AccountController extends AsyncNotifier<AccountState> {
   }
 
   /// Reads the workspace, renewing and storing the session if it needed it.
+  /// Bumped on every sign-in attempt.
+  ///
+  /// A poll loop runs for the whole ten-minute code lifetime. Without this, a
+  /// second attempt left the first loop running, and whichever finished first
+  /// won: the screen showed a stale code that no longer matched what the user
+  /// had just started, and retrying appeared to do nothing.
+  int _generation = 0;
+
   Future<AccountState> _signedIn(ConsoleSession session) async {
     try {
       final result = await ref
@@ -117,6 +125,7 @@ class AccountController extends AsyncNotifier<AccountState> {
   /// the user approves or the code expires.
   Future<void> signIn() async {
     final api = ref.read(consoleApiProvider);
+    final attempt = ++_generation;
 
     DeviceCode code;
     try {
@@ -126,10 +135,12 @@ class AccountController extends AsyncNotifier<AccountState> {
       return;
     }
 
-    state = AsyncData(AccountAwaitingApproval(code: code, poll: _poll(code)));
+    state = AsyncData(
+      AccountAwaitingApproval(code: code, poll: _poll(code, attempt)),
+    );
   }
 
-  Future<AccountSignedIn?> _poll(DeviceCode code) async {
+  Future<AccountSignedIn?> _poll(DeviceCode code, int attempt) async {
     final api = ref.read(consoleApiProvider);
     final store = ref.read(profileStoreProvider);
     final deadline = code.expiresAt;
@@ -138,19 +149,25 @@ class AccountController extends AsyncNotifier<AccountState> {
       await Future<void>.delayed(
         Duration(seconds: code.intervalSeconds.clamp(3, 15)),
       );
+      // A newer attempt owns the screen now; this loop must not write to it.
+      if (attempt != _generation) return null;
       try {
         final session = await api.pollSignIn(code);
         if (session == null) continue;
+        if (attempt != _generation) return null;
         await store.saveConsoleSession(session);
         final signedIn = await _signedIn(session);
+        if (attempt != _generation) return null;
         state = AsyncData(signedIn);
         return signedIn is AccountSignedIn ? signedIn : null;
       } on ConsoleException catch (error) {
+        if (attempt != _generation) return null;
         state = AsyncData(AccountError(error.message));
         return null;
       }
     }
 
+    if (attempt != _generation) return null;
     state = AsyncData(
       const AccountError('That sign-in code expired. Try again.'),
     );
@@ -158,6 +175,9 @@ class AccountController extends AsyncNotifier<AccountState> {
   }
 
   Future<void> signOut() async {
+    // Stop any loop still waiting on a code: it would otherwise sign the user
+    // back in behind their back.
+    _generation++;
     await ref.read(profileStoreProvider).clearConsoleSession();
     state = AsyncData(const AccountSignedOut());
   }

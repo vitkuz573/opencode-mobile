@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -429,6 +430,9 @@ class OpenCodeApi {
         'phone itself, and this server has no other known address.',
       );
     }
+    // Which hosts were tried, and what the last one answered. A pairing code is
+    // single use, so "rejected" almost always means this one was already spent.
+    debugPrint('redeem failed: tried=${hosts.join(",")} last=$lastError');
     throw lastError ??
         const ApiException('The pairing link could not be redeemed');
   }
@@ -456,8 +460,15 @@ class OpenCodeApi {
       final status = response.statusCode ?? 0;
       final cookie = _cookieFrom(response);
       if (cookie == null) {
+        // A pairing code is single use. Anything that looks like "wrong" here is
+        // almost always a code that has already been redeemed, so say that
+        // rather than leaving the user to retry the same dead link.
+        final reused = status == 400 || status == 404 || status == 410;
         throw ApiException(
-          status >= 400
+          reused
+              ? 'This pairing code was already used, or has expired. Run '
+                    '`opencode pair` again for a fresh one.'
+              : status >= 400
               ? 'The server rejected this pairing link'
               : 'No session cookie was returned — the link may have expired',
           statusCode: status,
