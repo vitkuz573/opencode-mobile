@@ -332,6 +332,243 @@ class _ServerCard extends StatelessWidget {
   }
 }
 
+/// One of the two ways to authenticate, shown as a card rather than a segment
+/// so the choice carries its consequences.
+class _ModeOption extends StatelessWidget {
+  const _ModeOption({
+    required this.icon,
+    required this.title,
+    required this.description,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String description;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Material(
+      color: selected
+          ? scheme.primaryContainer.withValues(alpha: 0.35)
+          : scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          // A hairline instead of a filled block: the selected state is a
+          // change of emphasis, not a change of kind.
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: selected ? scheme.primary : Colors.transparent,
+              width: 1.5,
+            ),
+          ),
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+          child: Row(
+            children: [
+              Icon(
+                icon,
+                size: 22,
+                color: selected ? scheme.primary : scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        fontWeight: selected
+                            ? FontWeight.w700
+                            : FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      description,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                selected
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                size: 20,
+                color: selected ? scheme.primary : scheme.outlineVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Fields sitting on one shared surface, with no border of their own.
+///
+/// The app theme fills every field *and* outlines it, so a stack of boxes
+/// read as nesting rather than as one form.
+class _FieldGroup extends StatelessWidget {
+  const _FieldGroup({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(children: children),
+      ),
+    );
+  }
+}
+
+class _SoftField extends StatelessWidget {
+  const _SoftField({
+    required this.controller,
+    required this.label,
+    this.hint,
+    this.icon,
+    this.obscure = false,
+    this.keyboardType,
+    this.minLines = 1,
+    this.maxLines = 1,
+    this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String? hint;
+  final IconData? icon;
+  final bool obscure;
+  final TextInputType? keyboardType;
+  final int minLines;
+  final int maxLines;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+      child: TextField(
+        controller: controller,
+        obscureText: obscure,
+        keyboardType: keyboardType,
+        autocorrect: false,
+        enableSuggestions: !obscure,
+        minLines: minLines,
+        maxLines: maxLines,
+        onChanged: onChanged,
+        style: const TextStyle(fontSize: 15),
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          prefixIcon: icon == null ? null : Icon(icon, size: 19),
+          filled: false,
+          border: InputBorder.none,
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          isDense: true,
+          contentPadding: EdgeInsets.symmetric(vertical: 14),
+        ),
+      ),
+    );
+  }
+}
+
+/// The action, pinned out of the scroll area so it stays reachable.
+class _SubmitBar extends StatelessWidget {
+  const _SubmitBar({
+    required this.busy,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final bool busy;
+  final String label;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(top: BorderSide(color: scheme.outlineVariant)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+          child: FilledButton.icon(
+            onPressed: onPressed,
+            icon: busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check),
+            label: Text(label),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorCard extends StatelessWidget {
+  const _ErrorCard({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.error_outline, color: scheme.onErrorContainer, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: scheme.onErrorContainer, fontSize: 14),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Adds a server: password or pairing link, the two ways a phone is trusted.
 class AddServerScreen extends ConsumerStatefulWidget {
   const AddServerScreen({super.key, this.prefill});
@@ -372,127 +609,130 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Add a server')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
         children: [
-          SegmentedButton<_Mode>(
-            segments: const [
-              ButtonSegment(
-                value: _Mode.password,
-                label: Text('Password'),
-                icon: Icon(Icons.key, size: 16),
-              ),
-              ButtonSegment(
-                value: _Mode.pairing,
-                label: Text('Pairing link'),
-                icon: Icon(Icons.qr_code, size: 16),
-              ),
-            ],
-            selected: {_mode},
-            onSelectionChanged: (selection) =>
-                setState(() => _mode = selection.first),
+          // Two ways to be trusted, each with what it actually costs the user.
+          // A segmented button gave the choice a name and nothing else, so the
+          // cards carry the decision.
+          _ModeOption(
+            icon: Icons.key_outlined,
+            title: 'Password',
+            description: 'The password printed when the server started.',
+            selected: _mode == _Mode.password,
+            onTap: () => setState(() => _mode = _Mode.password),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 10),
+          _ModeOption(
+            icon: Icons.qr_code_2_outlined,
+            title: 'Pairing link',
+            description: 'Works from anywhere and expires in five minutes.',
+            selected: _mode == _Mode.pairing,
+            onTap: () => setState(() => _mode = _Mode.pairing),
+          ),
+          const SizedBox(height: 24),
 
           if (_error != null) ...[
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.errorContainer,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    Icons.error_outline,
-                    color: theme.colorScheme.onErrorContainer,
-                    size: 18,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      _error!,
-                      style: TextStyle(
-                        color: theme.colorScheme.onErrorContainer,
-                      ),
+            _ErrorCard(message: _error!),
+            const SizedBox(height: 20),
+          ],
+
+          if (_mode == _Mode.password)
+            _FieldGroup(
+              children: [
+                _SoftField(
+                  controller: _url,
+                  label: 'Server address',
+                  hint: '192.168.1.5:4096',
+                  icon: Icons.lan_outlined,
+                  keyboardType: TextInputType.url,
+                  onChanged: (_) => setState(() {}),
+                ),
+                // Shows what will actually be stored, because the typed value
+                // is usually a bare host and the saved one carries a scheme.
+                if (_url.text.trim().isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.arrow_forward,
+                          size: 13,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            ServerProfile.normalizeBaseUrl(
+                              _url.text.trim(),
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
-              ),
+                _SoftField(
+                  controller: _password,
+                  label: 'Password',
+                  icon: Icons.password_outlined,
+                  obscure: true,
+                ),
+              ],
+            )
+          else
+            _FieldGroup(
+              children: [
+                _SoftField(
+                  controller: _link,
+                  label: 'Pairing link',
+                  hint: 'https://host/auth/connect/…',
+                  icon: Icons.link,
+                  minLines: 2,
+                  maxLines: 4,
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: OutlinedButton.icon(
+                    onPressed: _busy ? null : _scanQr,
+                    icon: const Icon(Icons.qr_code_scanner, size: 18),
+                    label: const Text('Scan the QR code'),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-          ],
 
-          TextField(
+          const SizedBox(height: 18),
+
+          // Last, because it is the only optional field: the name is garnish
+          // for the list, the address and the secret are what connect.
+          _SoftField(
             controller: _label,
-            decoration: const InputDecoration(
-              labelText: 'Name (optional)',
-              hintText: 'Work, home, VPS…',
-              prefixIcon: Icon(Icons.label_outline),
-            ),
+            label: 'Name',
+            hint: 'Optional — Work, home, VPS',
+            icon: Icons.label_outline,
           ),
-          const SizedBox(height: 16),
-
-          if (_mode == _Mode.password) ...[
-            TextField(
-              controller: _url,
-              keyboardType: TextInputType.url,
-              autocorrect: false,
-              decoration: const InputDecoration(
-                labelText: 'Server address',
-                hintText: '10.0.2.2:4096',
-                prefixIcon: Icon(Icons.lan_outlined),
-              ),
+          const SizedBox(height: 10),
+          Text(
+            'Saved servers are matched by address, so adding the same host '
+            'again replaces the stored one.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _password,
-              obscureText: true,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: const InputDecoration(
-                labelText: 'Server password',
-                helperText: 'Printed by `opencode serve` on startup',
-                prefixIcon: Icon(Icons.password_outlined),
-              ),
-              onSubmitted: (_) => _submit(),
-            ),
-          ] else ...[
-            TextField(
-              controller: _link,
-              autocorrect: false,
-              minLines: 2,
-              maxLines: 4,
-              decoration: const InputDecoration(
-                labelText: 'Pairing link',
-                hintText: 'https://host/auth/connect/…',
-                helperText: 'Run `opencode pair` on the host and paste the '
-                    'link, or scan its QR code',
-                prefixIcon: Icon(Icons.link),
-              ),
-              onSubmitted: (_) => _submit(),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _busy ? null : _scanQr,
-              icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('Scan the QR code instead'),
-            ),
-          ],
-
-          const SizedBox(height: 24),
-          FilledButton.icon(
-            onPressed: _busy ? null : _submit,
-            icon: _busy
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.check),
-            label: Text(_busy ? 'Connecting…' : 'Add and connect'),
           ),
         ],
+      ),
+      // Pinned to the bottom: a form that floats in the middle of an empty
+      // screen looks unfinished and puts the action a thumb's width out of
+      // reach on a tall form.
+      bottomNavigationBar: _SubmitBar(
+        busy: _busy,
+        label: _busy ? 'Connecting…' : 'Add and connect',
+        onPressed: _busy ? null : _submit,
       ),
     );
   }

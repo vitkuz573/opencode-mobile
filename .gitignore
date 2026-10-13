@@ -46,3 +46,9 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Local verification artefacts: screenshots pulled off a device and scratch
+# scripts used while checking a screen against a real server.
+*.png
+*.jpg
+_scratch/
