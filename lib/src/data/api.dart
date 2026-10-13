@@ -460,17 +460,8 @@ class OpenCodeApi {
       final status = response.statusCode ?? 0;
       final cookie = _cookieFrom(response);
       if (cookie == null) {
-        // A pairing code is single use. Anything that looks like "wrong" here is
-        // almost always a code that has already been redeemed, so say that
-        // rather than leaving the user to retry the same dead link.
-        final reused = status == 400 || status == 404 || status == 410;
         throw ApiException(
-          reused
-              ? 'This pairing code was already used, or has expired. Run '
-                    '`opencode pair` again for a fresh one.'
-              : status >= 400
-              ? 'The server rejected this pairing link'
-              : 'No session cookie was returned — the link may have expired',
+          redeemFailureMessage(response.data, status),
           statusCode: status,
         );
       }
@@ -618,6 +609,35 @@ class OpenCodeApi {
         data: {'agent': agentId},
       ),
     );
+  }
+
+  /// Why a pairing code was refused.
+  ///
+  /// The server answers this endpoint with plain prose that already names the
+  /// fix - "This pairing link expired or was already used. Run `opencode pair`
+  /// to get a new one." Replacing that with "the server rejected this pairing
+  /// link" threw away the only useful sentence in the exchange, and is what
+  /// made a spent code look like a broken app.
+  ///
+  /// A used code answers `401`, not `400`, so the status alone cannot identify
+  /// it: guessing from the status would have been wrong half the time. The body
+  /// is read first, and the status only decides the wording when the server
+  /// said nothing useful.
+  static String redeemFailureMessage(Object? body, int status) {
+    if (body is String) {
+      final text = body.trim();
+      if (text.isNotEmpty && text.length < 400) return text;
+    }
+    if (body is Map) {
+      final tag = body['_tag'];
+      if (tag is String && tag.isNotEmpty) return tag;
+    }
+    return switch (status) {
+      401 || 404 || 410 =>
+        'This pairing code has already been used, or has expired. Run '
+            '`opencode pair` for a new one.',
+      _ => 'The server refused this pairing link',
+    };
   }
 
   static String? _cookieFrom(Response<dynamic> response) {

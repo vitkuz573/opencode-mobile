@@ -1,7 +1,65 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opencode_mobile/src/data/api.dart';
 import 'package:opencode_mobile/src/data/pairing.dart';
 
 void main() {
+  group('why a pairing code was refused', () {
+    // Captured verbatim from the live server on 2026-10-13, when a spent code
+    // was redeemed. The status is 401, not 400, which is what made this
+    // indistinguishable from an auth problem.
+    const spent =
+        'This pairing link expired or was already used. Run `opencode pair` '
+        'to get a new one.';
+
+    test('the server explanation is passed through untouched', () {
+      expect(OpenCodeApi.redeemFailureMessage(spent, 401), spent);
+    });
+
+    test('a prose body wins over the status wording', () {
+      // Same status, but the server said something specific: use it.
+      expect(
+        OpenCodeApi.redeemFailureMessage('Code already redeemed', 401),
+        'Code already redeemed',
+      );
+    });
+
+    test('a tagged body is used when there is no prose', () {
+      expect(
+        OpenCodeApi.redeemFailureMessage(const {'_tag': 'Forbidden'}, 403),
+        'Forbidden',
+      );
+    });
+
+    test('an empty body falls back to the status', () {
+      for (final status in [401, 404, 410]) {
+        expect(
+          OpenCodeApi.redeemFailureMessage(null, status),
+          contains('`opencode pair`'),
+          reason: 'status $status should suggest a fresh code',
+        );
+      }
+      expect(
+        OpenCodeApi.redeemFailureMessage('   ', 401),
+        contains('already been used'),
+      );
+    });
+
+    test('an unreasonably long body is not shown as an error message', () {
+      final noisy = 'x' * 500;
+      expect(
+        OpenCodeApi.redeemFailureMessage(noisy, 500),
+        isNot(contains('xxx')),
+      );
+    });
+
+    test('an unrecognised status still says something', () {
+      expect(
+        OpenCodeApi.redeemFailureMessage(null, 500),
+        'The server refused this pairing link',
+      );
+    });
+  });
+
   group('the address printed in the QR', () {
     // What actually happens: `opencode pair` prints a link per reachable
     // address but encodes only the first into the QR, which is loopback. On a
