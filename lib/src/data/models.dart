@@ -416,6 +416,108 @@ class PermissionRequest {
     _ => action,
   };
 }
+
+/// One interactive question from the agent.
+///
+/// Unlike permissions, which offer a fixed set of replies, a form carries its
+/// own fields: free text, numbers, toggles and option lists. The agent stalls
+/// until someone answers, so an unanswered form looks exactly like a stuck
+/// model — which is why these surface the same way permissions do.
+class FormRequest {
+  const FormRequest({
+    required this.id,
+    required this.sessionId,
+    required this.title,
+    required this.fields,
+  });
+
+  /// Reads the `form` object out of a `form.created` event envelope.
+  factory FormRequest.fromEventData(Map<String, Object?> data) {
+    final form = _map(data['form']);
+    return FormRequest(
+      id: _str(form['id']) ?? '',
+      sessionId: _str(form['sessionID']) ?? '',
+      title: _str(form['title']) ?? 'Question',
+      fields: _list(form['fields'])
+          .whereType<Map>()
+          .map((e) => FormInput.fromJson(e.cast<String, Object?>()))
+          .where((f) => f.key.isNotEmpty)
+          .toList(growable: false),
+    );
+  }
+
+  final String id;
+  final String sessionId;
+  final String title;
+  final List<FormInput> fields;
+}
+
+/// One answerable field. Only the kinds the agent actually sends are
+/// modelled; unknown kinds render as plain text input rather than failing.
+class FormInput {
+  const FormInput({
+    required this.key,
+    required this.type,
+    this.title,
+    this.description,
+    this.required = false,
+    this.options = const [],
+    this.placeholder,
+    this.defaultValue,
+  });
+
+  factory FormInput.fromJson(Map<String, Object?> json) {
+    return FormInput(
+      key: _str(json['key']) ?? '',
+      type: _str(json['type']) ?? 'string',
+      title: _str(json['title']),
+      description: _str(json['description']),
+      required: json['required'] == true,
+      options: _list(json['options'])
+          .whereType<Map>()
+          .map((e) => FormOption.fromJson(e.cast<String, Object?>()))
+          .where((o) => o.value.isNotEmpty)
+          .toList(growable: false),
+      placeholder: _str(json['placeholder']),
+      // The default is stringified: numbers and toggles start from it.
+      defaultValue: json['default']?.toString(),
+    );
+  }
+
+  final String key;
+
+  /// `string`, `number`, `integer`, `boolean`, `multiselect` or `external`.
+  final String type;
+  final String? title;
+  final String? description;
+  final bool required;
+  final List<FormOption> options;
+  final String? placeholder;
+  final String? defaultValue;
+
+  bool get isOptions => options.isNotEmpty;
+  bool get isToggle => type == 'boolean';
+  bool get isMulti => type == 'multiselect';
+  bool get isExternal => type == 'external';
+  bool get isNumeric => type == 'number' || type == 'integer';
+}
+
+class FormOption {
+  const FormOption({required this.value, required this.label, this.description});
+
+  factory FormOption.fromJson(Map<String, Object?> json) {
+    final value = _str(json['value']) ?? '';
+    return FormOption(
+      value: value,
+      label: _str(json['label']) ?? value,
+      description: _str(json['description']),
+    );
+  }
+
+  final String value;
+  final String label;
+  final String? description;
+}
 // --- models -----------------------------------------------------------------
 
 /// Reasoning effort levels are expressed as model variants: `low`, `medium`,

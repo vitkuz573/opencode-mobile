@@ -65,6 +65,11 @@ Timeline applyEvent(Timeline state, ServerEvent event, {String? sessionId}) {
     case Ev.executionInterrupted:
       return state.copyWith(running: false, clearRetry: true);
 
+    case Ev.executionFailed:
+      // Terminal like the two above, but with the reason kept: a failed
+      // execution must read as failed, not as stopped.
+      return state.copyWith(running: false, retryError: _errorText(event));
+
     case Ev.retryScheduled:
       final attempt = event.data['attempt'];
       return state.copyWith(

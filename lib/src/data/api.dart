@@ -351,8 +351,7 @@ class OpenCodeApi {
     );
   }
 
-  Future<bool> interrupt(String sessionId, {String? directory}) async {
-    final response = await _guard(
+  Future<bool> interrupt(String sessionId, {String? directory}) async {    final response = await _guard(
       () => _dio.post<dynamic>(
         '/api/session/$sessionId/interrupt',
         queryParameters: {
@@ -379,6 +378,26 @@ class OpenCodeApi {
             'directory': directory,
         },
         data: {'reply': reply},
+      ),
+    );
+  }
+
+  /// Answers an interactive form: `{key: value}` per field. Like permissions,
+  /// the agent waits for this, so a missing answer reads as a stuck model.
+  Future<void> replyToForm(
+    String sessionId,
+    String formId,
+    Map<String, Object?> answer, {
+    String? directory,
+  }) async {
+    await _guard(
+      () => _dio.post<dynamic>(
+        '/api/session/$sessionId/form/$formId/reply',
+        queryParameters: {
+          if (directory != null && directory.isNotEmpty)
+            'directory': directory,
+        },
+        data: {'answer': answer},
       ),
     );
   }

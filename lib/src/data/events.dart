@@ -64,15 +64,22 @@ abstract final class Ev {
   static const serverConnected = 'server.connected';
   static const projectUpdated = 'project.updated';
 
+  // Note: there is no `session.updated` or `session.error` event on the wire
+  // (verified against the 2.0.28 schema). Rename and delete have their own
+  // types; failures arrive as `session.retry.scheduled` and the terminal
+  // `session.execution.failed`.
   static const sessionCreated = 'session.created';
   static const sessionRenamed = 'session.renamed';
   static const sessionDeleted = 'session.deleted';
-  static const sessionUpdated = 'session.updated';
-  static const sessionError = 'session.error';
 
   static const executionStarted = 'session.execution.started';
   static const executionSucceeded = 'session.execution.succeeded';
   static const executionInterrupted = 'session.execution.interrupted';
+
+  /// A terminal failure. Unlike a retry, nothing follows it: the spinner must
+  /// stop and the error must show. Payload: `{sessionID, error{type, message,
+  /// status?, response?}}`.
+  static const executionFailed = 'session.execution.failed';
 
   static const textStarted = 'session.text.started';
   static const textDelta = 'session.text.delta';
@@ -95,9 +102,18 @@ abstract final class Ev {
   /// "stuck", and the client must show it instead of spinning silently.
   static const retryScheduled = 'session.retry.scheduled';
 
+  /// A finished compaction. History on the server was replaced, so anything
+  /// rendered from before it is stale. Payload carries the summary, not the
+  /// messages; the client refetches.
+  static const compactionEnded = 'session.compaction.ended';
+
   static const usageUpdated = 'session.usage.updated';
   static const permissionAsked = 'permission.asked';
   static const permissionReplied = 'permission.replied';
+
+  static const formCreated = 'form.created';
+  static const formReplied = 'form.replied';
+  static const formCancelled = 'form.cancelled';
 }
 
 enum StreamStatus { idle, connecting, live, retrying, failed }

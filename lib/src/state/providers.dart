@@ -406,6 +406,10 @@ final remoteHostsProvider = FutureProvider<List<String>>((ref) async {
 });
 
 final projectsProvider = FutureProvider<List<Project>>((ref) async {
+  // A project created, renamed or removed elsewhere (TUI, another client)
+  // arrives as an event; the REST list below would otherwise stay stale until
+  // someone pulls to refresh.
+  ref.watch(projectMutationsProvider);
   final api = ref.watch(apiProvider);
   if (api == null) return const [];
   return api.projects();
@@ -454,11 +458,38 @@ final selectedDirectoryProvider =
     NotifierProvider<SelectedDirectory, String?>(SelectedDirectory.new);
 
 final sessionsProvider = FutureProvider<List<SessionSummary>>((ref) async {
+  ref.watch(sessionMutationsProvider);
   final api = ref.watch(apiProvider);
   if (api == null) return const [];
   final directory = ref.watch(selectedDirectoryProvider);
   final page = await api.sessions(directory: directory, limit: 100);
   return page.items;
+});
+
+/// Structural changes on the event bus that invalidate the REST lists above.
+///
+/// Sessions and projects are read over REST but announced over SSE; without
+/// this, a session created or deleted anywhere but here would not appear or
+/// disappear until a manual refresh. Counting is enough — the lists refetch
+/// themselves when the count moves.
+final sessionMutationsProvider = Provider<int>((ref) {
+  var count = 0;
+  for (final event in _eventsOf(ref)) {
+    if (event.type == Ev.sessionCreated ||
+        event.type == Ev.sessionDeleted) {
+      count++;
+    }
+  }
+  return count;
+});
+
+/// Projects change rarely, but when they do it is always somewhere else.
+final projectMutationsProvider = Provider<int>((ref) {
+  var count = 0;
+  for (final event in _eventsOf(ref)) {
+    if (event.type == Ev.projectUpdated) count++;
+  }
+  return count;
 });
 
 List<ServerEvent> _eventsOf(Ref ref) =>
@@ -492,18 +523,52 @@ final sessionRenamesProvider = Provider<Map<String, String>>((ref) {
 });
 
 /// Permission requests that have not been answered yet.
+///
+/// Two passes over the log: collect the answers first, then the questions.
+/// A single pass would keep a request asked before its answer, and event
+/// order on a replayed log is not something to bet the inbox on.
 final permissionInboxProvider = Provider<List<PermissionRequest>>((ref) {
-  final open = <PermissionRequest>[];
+  final events = _eventsOf(ref);
   final answered = <String>{};
-  for (final event in _eventsOf(ref)) {
-    if (event.type == Ev.permissionAsked) {
-      final request = event.asPermissionRequest;
-      if (request != null && !answered.contains(request.id)) {
-        open.add(request);
-      }
-    } else if (event.type == Ev.permissionReplied) {
+  for (final event in events) {
+    if (event.type == Ev.permissionReplied) {
       final id = event.data['requestID'];
       if (id is String) answered.add(id);
+    }
+  }
+  final open = <PermissionRequest>[];
+  for (final event in events) {
+    if (event.type != Ev.permissionAsked) continue;
+    final request = event.asPermissionRequest;
+    if (request != null && !answered.contains(request.id)) {
+      open.add(request);
+    }
+  }
+  open.sort((a, b) => b.id.compareTo(a.id));
+  return open;
+});
+
+/// Interactive forms that have not been answered yet.
+///
+/// Same contract as permissions: the agent stalls until someone answers, so
+/// an unanswered form is indistinguishable from a stuck model. `form.replied`
+/// and `form.cancelled` retire entries; anything else is a new question.
+/// Two passes like permissions: order on a replayed log is not to be trusted.
+final formInboxProvider = Provider<List<FormRequest>>((ref) {
+  final events = _eventsOf(ref);
+  final settled = <String>{};
+  for (final event in events) {
+    if (event.type == Ev.formReplied || event.type == Ev.formCancelled) {
+      final id = event.data['id'];
+      if (id is String) settled.add(id);
+    }
+  }
+  final open = <FormRequest>[];
+  for (final event in events) {
+    if (event.type != Ev.formCreated) continue;
+    final request = FormRequest.fromEventData(event.data);
+    if (request.id.isNotEmpty && !settled.contains(request.id)) {
+      open.add(request);
     }
   }
   open.sort((a, b) => b.id.compareTo(a.id));

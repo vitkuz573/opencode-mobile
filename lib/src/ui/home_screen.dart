@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/models.dart';
 import '../state/providers.dart';
 import 'account_screen.dart';
+import 'form_sheet.dart';
 import 'permission_sheet.dart';
 import 'projects_screen.dart';
 import 'servers_screen.dart';
@@ -19,6 +20,7 @@ class HomeScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final pending = ref.watch(permissionInboxProvider);
+    final forms = ref.watch(formInboxProvider);
 
     return Scaffold(
       body: Column(
@@ -31,6 +33,17 @@ class HomeScreen extends ConsumerWidget {
                 request: request,
                 api: ref.read(apiProvider),
                 onReplied: () => ref.invalidate(permissionInboxProvider),
+              ),
+            ),
+          if (forms.isNotEmpty)
+            FormBanner(
+              requests: forms,
+              onOpen: (request) => showFormSheet(
+                context,
+                request: request,
+                api: ref.read(apiProvider),
+                directory: null,
+                onReplied: () => ref.invalidate(formInboxProvider),
               ),
             ),
           Expanded(
@@ -287,8 +300,7 @@ class SessionTile extends StatelessWidget {
 /// A strip above the list when something is waiting on the user. Shown on
 /// every screen that lists sessions, so a pending approval is never hidden
 /// behind having navigated somewhere.
-class PermissionBanner extends StatelessWidget {
-  const PermissionBanner({
+class PermissionBanner extends StatelessWidget {  const PermissionBanner({
     super.key,
     required this.requests,
     required this.onOpen,
@@ -313,6 +325,39 @@ class PermissionBanner extends StatelessWidget {
         subtitle: Text(
           first.headline +
               (first.resources.isEmpty ? '' : ' · ${first.resources.first}'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => onOpen(first),
+      ),
+    );
+  }
+}
+
+/// The same strip for interactive forms: the agent waits on answers, so an
+/// unanswered form stalls the session exactly like an unanswered permission.
+class FormBanner extends StatelessWidget {
+  const FormBanner({super.key, required this.requests, required this.onOpen});
+
+  final List<FormRequest> requests;
+  final ValueChanged<FormRequest> onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final first = requests.first;
+    return Material(
+      color: Colors.orange.withValues(alpha: 0.16),
+      child: ListTile(
+        dense: true,
+        leading: Icon(Icons.quiz_outlined, color: Colors.orange.shade800),
+        title: Text(
+          requests.length == 1
+              ? 'A question needs your answers'
+              : '${requests.length} questions need your answers',
+        ),
+        subtitle: Text(
+          first.title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),

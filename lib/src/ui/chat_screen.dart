@@ -8,6 +8,7 @@ import '../data/events.dart';
 import '../data/models.dart';
 import '../state/providers.dart';
 import '../state/timeline.dart';
+import 'form_sheet.dart';
 import 'model_picker_sheet.dart';
 import 'agent_picker_sheet.dart';
 import 'widgets.dart';
@@ -70,6 +71,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _sending = false;
   String? _error;
 
+  /// Last durable sequence number folded for this session. The stream is
+  /// volatile by contract — a slow consumer is cut off, and anything missed
+  /// during a gap never replays — so a jump means the timeline has holes and
+  /// only a refetch repairs it.
+  int? _lastSeq;
+
   @override
   void initState() {
     super.initState();
@@ -119,6 +126,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         _model = model;
         _agent = agent;
         _loading = false;
+        // A fresh history starts a fresh sequence chain.
+        _lastSeq = null;
       });
       _scrollToEnd();
       _listen();
@@ -142,6 +151,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _onEvent(ServerEvent event) {
+    // Compaction replaces history on the server; anything rendered from
+    // before it belongs to a conversation that no longer exists.
+    if (event.type == Ev.compactionEnded) {
+      _load();
+      return;
+    }
+    if (event.seq != null) {
+      if (_lastSeq != null && event.seq! > _lastSeq! + 1) {
+        _lastSeq = event.seq;
+        _load();
+        return;
+      }
+      _lastSeq = event.seq;
+    }
     final next = applyEvent(_timeline, event, sessionId: widget.sessionId);
     final grew = next.messages.length != _timeline.messages.length;
     setState(() => _timeline = next);
@@ -279,6 +302,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         .watch(permissionInboxProvider)
         .where((p) => p.sessionId == widget.sessionId)
         .toList(growable: false);
+    final forms = ref
+        .watch(formInboxProvider)
+        .where((f) => f.sessionId == widget.sessionId)
+        .toList(growable: false);
 
     return Scaffold(
       appBar: AppBar(
@@ -396,11 +423,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
       body: Column(
         children: [
-          if (_timeline.isRetrying)
+          if (_timeline.isRetrying && _timeline.running)
             _RetryNotice(
               attempt: _timeline.retryAttempt,
               error: _timeline.retryError!,
             ),
+          if (!_timeline.running && _timeline.retryError != null)
+            _FailedNotice(error: _timeline.retryError!),
           if (pending.isNotEmpty)
             _InlinePermission(
               request: pending.first,
@@ -415,6 +444,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 );
                 ref.invalidate(permissionInboxProvider);
               },
+            ),
+          if (forms.isNotEmpty)
+            _InlineForm(
+              request: forms.first,
+              onOpen: () => showFormSheet(
+                context,
+                request: forms.first,
+                api: ref.read(apiProvider),
+                directory: widget.directory,
+                onReplied: () => ref.invalidate(formInboxProvider),
+              ),
             ),
           Expanded(child: _body()),
           _Composer(
@@ -514,6 +554,40 @@ class _RetryNotice extends StatelessWidget {
         ),
         title: Text('$label. Retrying…'),
         subtitle: Text(error, maxLines: 2, overflow: TextOverflow.ellipsis),
+      ),
+    );
+  }
+}
+
+/// A finished failure. Same spot as the retry notice, different verdict: the
+/// spinner is gone and what remains is the reason.
+class _FailedNotice extends StatelessWidget {
+  const _FailedNotice({required this.error});
+
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.errorContainer,
+      child: ListTile(
+        dense: true,
+        leading: Icon(
+          Icons.error_outline,
+          size: 18,
+          color: scheme.onErrorContainer,
+        ),
+        title: Text(
+          'Failed',
+          style: TextStyle(color: scheme.onErrorContainer),
+        ),
+        subtitle: Text(
+          error,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(color: scheme.onErrorContainer),
+        ),
       ),
     );
   }
@@ -1210,9 +1284,65 @@ class _UsageFooter extends StatelessWidget {
   }
 }
 
+/// An open question in this session. Tapping opens the form; answering happens
+/// there, not here, because fields do not fit an inline card.
+class _InlineForm extends StatelessWidget {
+  const _InlineForm({required this.request, required this.onOpen});
+
+  final FormRequest request;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final accent = Colors.orange.shade700;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.quiz_outlined, size: 18, color: accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  request.title,
+                  style: theme.textTheme.titleSmall,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${request.fields.length} question${request.fields.length == 1 ? '' : 's'} waiting',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: onOpen,
+              child: const Text('Answer'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _InlinePermission extends StatelessWidget {
   const _InlinePermission({required this.request, required this.onAnswer});
-
   final PermissionRequest request;
   final Future<void> Function(PermissionReply reply) onAnswer;
 

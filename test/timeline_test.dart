@@ -163,6 +163,18 @@ void main() {
   });
 
   group('retry folding', () {
+    test('a recorded retry loop stays running with the reason', () {
+      // Real capture: opencode 2.0.28 on Android, model calls failing on DNS.
+      final timeline = fold(
+        loadFixture('retry_loop'),
+        'ses_ec9a429afffen83n1I3TvUhm3W',
+      );
+
+      expect(timeline.running, isTrue);
+      expect(timeline.retryAttempt, 3);
+      expect(timeline.retryError, 'getaddrinfo ETIMEOUT opencode.ai');
+    });
+
     ServerEvent retry({Object? error, int attempt = 2}) => ServerEvent.fromJson({
       'type': Ev.retryScheduled,
       'created': 3,
@@ -237,6 +249,27 @@ void main() {
 
       expect(timeline.running, isFalse);
       expect(timeline.isRetrying, isFalse);
+    });
+
+    test('a failed execution stops the run but keeps the reason', () {
+      final timeline = fold([
+        ServerEvent.fromJson({
+          'type': Ev.executionStarted,
+          'created': 1,
+          'data': {'sessionID': 'ses_x'},
+        }),
+        ServerEvent.fromJson({
+          'type': Ev.executionFailed,
+          'created': 5,
+          'data': {
+            'sessionID': 'ses_x',
+            'error': {'type': 'provider.auth', 'message': 'nope'},
+          },
+        }),
+      ], 'ses_x');
+
+      expect(timeline.running, isFalse);
+      expect(timeline.retryError, 'nope');
     });
 
     test('a new execution starts without the old failure', () {
