@@ -82,10 +82,10 @@ void main() {
         ),
       );
 
-      // A running session gets a status dot on the leading icon and is not
-      // mistaken for something awaiting approval.
+      // A running session says so in words, and is not mistaken for something
+      // awaiting approval. No chevron: the whole card is the target.
       expect(find.byIcon(Icons.gpp_maybe_outlined), findsNothing);
-      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+      expect(find.text('running'), findsOneWidget);
     });
 
     testWidgets('surfaces a pending approval', (tester) async {

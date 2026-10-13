@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../app.dart';
-import '../data/events.dart';
 import '../data/models.dart';
 import '../state/providers.dart';
 import 'account_screen.dart';
 import 'permission_sheet.dart';
+import 'projects_screen.dart';
 import 'servers_screen.dart';
 import 'settings_screen.dart';
 import 'usage_screen.dart';
@@ -19,94 +18,13 @@ class HomeScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final connection = ref.watch(connectionProvider).value;
-    final sessions = ref.watch(sessionsProvider);
-    final running = ref.watch(runningSessionIdsProvider);
-    final renames = ref.watch(sessionRenamesProvider);
     final pending = ref.watch(permissionInboxProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(connection?.profile?.displayHost ?? 'OpenCode'),
-        actions: [
-          _ConnectionStatus(),
-          PopupMenuButton<String>(
-            onSelected: (value) => switch (value) {
-              'settings' => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
-              ),
-              'servers' => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const ServersScreen()),
-              ),
-              'usage' => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const UsageScreen()),
-              ),
-              'account' => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => const AccountScreen(),
-                ),
-              ),
-              'disconnect' => ref
-                  .read(connectionProvider.notifier)
-                  .disconnect(),
-              _ => null,
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 'settings',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.settings_outlined),
-                  title: const Text('Settings'),
-                ),
-              ),
-              PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'servers',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.dns_outlined),
-                  title: const Text('Servers'),
-                ),
-              ),
-              PopupMenuItem(
-                value: 'usage',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.insights_outlined),
-                  title: const Text('Usage'),
-                ),
-              ),
-              PopupMenuItem(
-                value: 'account',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.cloud_outlined),
-                  title: const Text('opencode.ai account'),
-                ),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'disconnect',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.logout),
-                  title: const Text('Disconnect'),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _newSession(context, ref),
-        icon: const Icon(Icons.add_comment_outlined),
-        label: const Text('New session'),
-      ),
       body: Column(
         children: [
           if (pending.isNotEmpty)
-            _PermissionBanner(
+            PermissionBanner(
               requests: pending,
               onOpen: (request) => showPermissionSheet(
                 context,
@@ -115,99 +33,93 @@ class HomeScreen extends ConsumerWidget {
                 onReplied: () => ref.invalidate(permissionInboxProvider),
               ),
             ),
-          _ProjectSelector(),
-          const Divider(height: 1),
           Expanded(
-            child: sessions.when(
-              loading: () =>
-                  const Center(child: CircularProgressIndicator()),
-              error: (error, _) => EmptyState(
-                icon: Icons.cloud_off,
-                title: 'Cannot load sessions',
-                message: '$error',
-                action: FilledButton.tonal(
-                  onPressed: () => ref.invalidate(sessionsProvider),
-                  child: const Text('Retry'),
-                ),
-              ),
-              data: (items) {
-                if (items.isEmpty) {
-                  return const EmptyState(
-                    icon: Icons.forum_outlined,
-                    title: 'No sessions yet',
-                    message: 'Start one to talk to your agent from here.',
-                  );
-                }
-                final sorted = [...items]..sort(
-                  (a, b) => b.updated.compareTo(a.updated),
-                );
-                return RefreshIndicator(
-                  onRefresh: () async => ref.invalidate(sessionsProvider),
-                  child: ListView.separated(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    itemCount: sorted.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final session = sorted[index];
-                      final title = renames[session.id] ?? session.displayTitle;
-                      return SessionTile(
-                        title: title,
-                        model: session.modelId,
-                        agent: session.agent,
-                        updated: session.updated,
-                        cost: session.cost,
-                        tokens: session.tokens.total,
-                        isRunning: running.contains(session.id),
-                        needsApproval: pending.any(
-                          (p) => p.sessionId == session.id,
-                        ),
-                        onTap: () => openSession(
-                          context,
-                          SessionSummary(
-                            id: session.id,
-                            title: title,
-                            projectId: session.projectId,
-                            cost: session.cost,
-                            tokens: session.tokens,
-                            created: session.created,
-                            updated: session.updated,
-                            agent: session.agent,
-                            modelId: session.modelId,
-                            modelProvider: session.modelProvider,
-                            directory: session.directory,
-                            outcome: session.outcome,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                );
-              },
-            ),
+            child: const ProjectsScreen(),
           ),
         ],
       ),
     );
   }
+}
 
-  Future<void> _newSession(BuildContext context, WidgetRef ref) async {
-    final api = ref.read(apiProvider);
-    if (api == null) return;
-    final directory = ref.read(selectedDirectoryProvider);
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final session = await api.createSession(directory: directory);
-      if (!context.mounted) return;
-      ref.invalidate(sessionsProvider);
-      await openSession(context, session);
-    } catch (error) {
-      messenger.showSnackBar(
-        SnackBar(content: Text('Could not create a session: $error')),
-      );
-    }
+/// The overflow menu, shared by every screen that has the same header.
+class HomeMenu extends ConsumerWidget {
+  const HomeMenu({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return PopupMenuButton<String>(
+      tooltip: 'Menu',
+      onSelected: (value) => switch (value) {
+        'settings' => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+        ),
+        'servers' => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const ServersScreen()),
+        ),
+        'usage' => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const UsageScreen()),
+        ),
+        'account' => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const AccountScreen()),
+        ),
+        'disconnect' => ref.read(connectionProvider.notifier).disconnect(),
+        _ => null,
+      },
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: 'settings',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.settings_outlined),
+            title: Text('Settings'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'servers',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.dns_outlined),
+            title: Text('Servers'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'usage',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.insights_outlined),
+            title: Text('Usage'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'account',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.cloud_outlined),
+            title: Text('opencode.ai account'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'disconnect',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.logout),
+            title: Text('Disconnect'),
+          ),
+        ),
+      ],
+    );
   }
 }
 
+/// One session in a list.
+///
+/// A card rather than a bare `ListTile`: the state matters more than the title
+/// here, and a running session or one waiting on an approval has to be visible
+/// before the text is read. The status is a coloured edge rather than a badge,
+/// which used to compete with the title for the same attention.
 class SessionTile extends StatelessWidget {
   const SessionTile({
     super.key,
@@ -235,177 +147,141 @@ class SessionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return ListTile(
-      onTap: onTap,
-      leading: _LeadingBadge(isRunning: isRunning, needsApproval: needsApproval),
-      title: Text(
-        title,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodyLarge,
-      ),
-      subtitle: Padding(
-        padding: const EdgeInsets.only(top: 4),
-        child: Wrap(
-          spacing: 6,
-          runSpacing: 4,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            Text(
-              formatRelativeTime(updated),
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-            if (agent != null) Pill(label: agent!, dense: true),
-            if (model != null) Pill(label: model!, dense: true),
-            if (tokens > 0)
-              Pill(
-                label: '${formatTokens(tokens)} tok',
-                dense: true,
-                icon: Icons.toll_outlined,
-              ),
-            if (cost > 0)
-              Pill(label: formatCost(cost), dense: true, icon: Icons.payments_outlined),
-          ],
-        ),
-      ),
-      trailing: needsApproval
-          ? const Icon(Icons.gpp_maybe_outlined, color: Colors.orange)
-          : const Icon(Icons.chevron_right),
-    );
-  }
-}
-
-class _LeadingBadge extends StatelessWidget {
-  const _LeadingBadge({required this.isRunning, required this.needsApproval});
-
-  final bool isRunning;
-  final bool needsApproval;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final color = needsApproval
+    final scheme = theme.colorScheme;
+    final accent = needsApproval
         ? Colors.orange
-        : (isRunning ? scheme.primary : scheme.outline);
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        Icon(Icons.chat_bubble_outline, color: color, size: 24),
-        if (isRunning || needsApproval)
-          Positioned(
-            right: 0,
-            bottom: 0,
-            child: Container(
-              width: 9,
-              height: 9,
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-                border: Border.all(color: scheme.surface, width: 1.5),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
+        : (isRunning ? scheme.primary : scheme.outlineVariant);
 
-class _ProjectSelector extends ConsumerWidget {
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final projects = ref.watch(projectsProvider);
-    final selected = ref.watch(selectedDirectoryProvider);
-    final theme = Theme.of(context);
-
-    return projects.when(
-      loading: () => const SizedBox(height: 48),
-      error: (_, _) => const SizedBox(height: 48),
-      data: (items) {
-        if (items.isEmpty) return const SizedBox(height: 8);
-        final directories = <String?>{
-          null,
-          ...items.map((p) => p.scopeDirectory),
-        };
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-          child: Row(
-            children: [
-              Icon(Icons.folder_outlined, size: 18, color: theme.colorScheme.outline),
-              const SizedBox(width: 10),
-              Expanded(
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String?>(
-                    isExpanded: true,
-                    value: directories.contains(selected) ? selected : null,
-                    hint: const Text('All projects'),
-                    items: [
-                      for (final directory in directories)
-                        DropdownMenuItem<String?>(
-                          value: directory,
-                          child: Text(
-                            directory == null
-                                ? 'All projects'
-                                : _labelFor(items, directory),
-                            overflow: TextOverflow.ellipsis,
-                          ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // The status edge. Empty width when nothing is happening, so
+                // idle sessions line up with each other.
+                if (isRunning || needsApproval)
+                  Container(width: 3, color: accent),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyLarge?.copyWith(
+                                  fontWeight: FontWeight.w500,
+                                  height: 1.3,
+                                ),
+                              ),
+                            ),
+                            if (needsApproval) ...[
+                              const SizedBox(width: 8),
+                              Tooltip(
+                                message: 'Waiting for your approval',
+                                child: Icon(
+                                  Icons.gpp_maybe_outlined,
+                                  size: 19,
+                                  color: Colors.orange,
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
-                    ],
-                    onChanged: (value) {
-                      ref.read(selectedDirectoryProvider.notifier).select(value);
-                    },
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Text(
+                              formatRelativeTime(updated),
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                            if (isRunning) ...[
+                              const SizedBox(width: 8),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 9,
+                                    height: 9,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 1.6,
+                                      color: scheme.primary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Text(
+                                    'running',
+                                    style: theme.textTheme.labelSmall
+                                        ?.copyWith(color: scheme.primary),
+                                  ),
+                                ],
+                              ),
+                            ],
+                            const Spacer(),
+                            if (agent != null && agent!.isNotEmpty)
+                              Pill(label: agent!, dense: true),
+                            if (model != null && model!.isNotEmpty)
+                              Pill(label: model!, dense: true),
+                            if (tokens > 0)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 6),
+                                child: Text(
+                                  formatTokens(tokens),
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            if (cost > 0)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: Text(
+                                  formatCost(cost),
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        );
-      },
-    );
-  }
-
-  static String _labelFor(List<Project> projects, String? directory) {
-    if (directory == null) return 'All projects';
-    for (final project in projects) {
-      if (project.scopeDirectory == directory ||
-          project.canonical == directory) {
-        return project.displayName;
-      }
-    }
-    return directory.split(RegExp(r'[/\\]')).last;
-  }
-}
-
-class _ConnectionStatus extends ConsumerWidget {
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final status = ref.watch(eventStatusProvider).value;
-    final scheme = Theme.of(context).colorScheme;
-    if (status == null) return const SizedBox(width: 8);
-
-    final (label, color) = switch (status.status) {
-      StreamStatus.live => ('live', Colors.green),
-      StreamStatus.connecting => ('connecting', scheme.primary),
-      StreamStatus.retrying => (
-        status.attempt > 3 ? 'offline' : 'retrying',
-        Colors.orange,
-      ),
-      StreamStatus.failed => ('offline', scheme.error),
-      StreamStatus.idle => ('idle', scheme.outline),
-    };
-    return Padding(
-      padding: const EdgeInsets.only(right: 4),
-      child: Tooltip(
-        message: status.message ?? 'Event stream: $label',
-        child: StreamIndicator(label: label, color: color),
+        ),
       ),
     );
   }
 }
 
-class _PermissionBanner extends StatelessWidget {
-  const _PermissionBanner({required this.requests, required this.onOpen});
+/// A strip above the list when something is waiting on the user. Shown on
+/// every screen that lists sessions, so a pending approval is never hidden
+/// behind having navigated somewhere.
+class PermissionBanner extends StatelessWidget {
+  const PermissionBanner({
+    super.key,
+    required this.requests,
+    required this.onOpen,
+  });
 
   final List<PermissionRequest> requests;
   final ValueChanged<PermissionRequest> onOpen;
