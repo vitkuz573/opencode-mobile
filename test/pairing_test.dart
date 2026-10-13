@@ -2,6 +2,88 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:opencode_mobile/src/data/pairing.dart';
 
 void main() {
+  group('the address printed in the QR', () {
+    // What actually happens: `opencode pair` prints a link per reachable
+    // address but encodes only the first into the QR, which is loopback. On a
+    // phone that address is the phone.
+    const printed = '''
+  http://127.0.0.1:49374/auth/connect/Q4WSc1PjtEB7tDAVzy7TzA
+  https://t7xq2m4k9b1n3vd8.opentunnel.example/auth/connect/Q4WSc1PjtEB7tDAVzy7TzA
+''';
+    const scanned = 'http://127.0.0.1:49374/auth/connect/Q4WSc1PjtEB7tDAVzy7TzA';
+
+    test('the QR alone carries only the loopback link', () {
+      expect(PairingLink.all(scanned), hasLength(1));
+      expect(PairingLink.isLoopback(PairingLink.tryParse(scanned)!), isTrue);
+    });
+
+    test('both addresses come out of the printed output', () {
+      expect(PairingLink.all(printed), hasLength(2));
+    });
+
+    test('the code is the same behind both addresses', () {
+      final code = PairingLink.codeOf(scanned);
+      expect(code, 'Q4WSc1PjtEB7tDAVzy7TzA');
+      for (final link in PairingLink.all(printed)) {
+        expect(PairingLink.codeOf(link), code);
+      }
+    });
+
+    test('a loopback link can be retargeted at a reachable host', () {
+      expect(
+        PairingLink.retarget(
+          scanned,
+          'https://t7xq2m4k9b1n3vd8.opentunnel.example',
+        ),
+        'https://t7xq2m4k9b1n3vd8.opentunnel.example'
+            '/auth/connect/Q4WSc1PjtEB7tDAVzy7TzA',
+      );
+    });
+
+    test('retargeting keeps the scheme when only a host is given', () {
+      // No scheme in, https out: a bare host would otherwise resolve to http.
+      expect(
+        PairingLink.retarget(scanned, 'tunnel.example'),
+        'https://tunnel.example/auth/connect/Q4WSc1PjtEB7tDAVzy7TzA',
+      );
+    });
+
+    test('retargeting drops a port that is not on the new address', () {
+      final retargeted = PairingLink.retarget(
+        scanned,
+        'https://tunnel.example',
+      );
+      expect(retargeted, isNot(contains('49374')));
+    });
+
+    test('retargeting keeps a port the new address does carry', () {
+      expect(
+        PairingLink.retarget(scanned, 'https://box.test:8443'),
+        'https://box.test:8443/auth/connect/Q4WSc1PjtEB7tDAVzy7TzA',
+      );
+    });
+
+    test('nothing to retarget without a code', () {
+      expect(
+        PairingLink.retarget('https://example.test/', 'box.test'),
+        isNull,
+      );
+      expect(PairingLink.retarget(scanned, ''), isNull);
+    });
+
+    test('retargeting a link onto itself changes nothing meaningful', () {
+      expect(
+        PairingLink.retarget(scanned, 'http://127.0.0.1:49374'),
+        'http://127.0.0.1:49374/auth/connect/Q4WSc1PjtEB7tDAVzy7TzA',
+      );
+    });
+
+    test('a code-less URL reports no code', () {
+      expect(PairingLink.codeOf('https://example.test/auth/connect/'), isNull);
+      expect(PairingLink.codeOf('https://example.test/other/x'), isNull);
+    });
+  });
+
   group('pairing link parsing', () {
     test('accepts what `opencode pair` prints', () {
       expect(

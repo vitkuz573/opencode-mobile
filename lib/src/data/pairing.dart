@@ -15,13 +15,20 @@
 abstract final class PairingLink {
   /// Returns the best pairing link found in [raw], or `null` if there is none.
   static String? tryParse(String raw) {
-    final candidates = _candidates(raw);
+    final candidates = all(raw);
     if (candidates.isEmpty) return null;
     return candidates.firstWhere(
       (url) => !isLoopback(url),
       orElse: () => candidates.first,
     );
   }
+
+  /// Every pairing link in [raw], in the order they appear.
+  ///
+  /// `opencode pair` prints one link per reachable address and encodes only the
+  /// first into its QR code, so a scan can hand back a loopback link that means
+  /// nothing on a phone. Offering the list lets the user pick.
+  static List<String> all(String raw) => _candidates(raw);
 
   /// True when [link] points at the device itself rather than at the machine
   /// running the server.
@@ -38,6 +45,40 @@ abstract final class PairingLink {
 
   /// The host of [link], for error messages that name the target.
   static String? hostOf(String link) => Uri.tryParse(link)?.host;
+
+  /// The single-use code carried in the link's path.
+  static String? codeOf(String link) {
+    const marker = '/auth/connect/';
+    final path = Uri.tryParse(link)?.path ?? '';
+    final index = path.indexOf(marker);
+    if (index < 0) return null;
+    final code = path.substring(index + marker.length).split('/').first;
+    return code.isEmpty ? null : code;
+  }
+
+  /// Rebuilds [link] against [host], keeping the code.
+  ///
+  /// A pairing code is not bound to an address: `opencode pair` prints the same
+  /// code behind several hosts. So a link printed for loopback can be retargeted
+  /// at a tunnel the phone already reaches.
+  static String? retarget(String link, String host) {
+    final uri = Uri.tryParse(link);
+    final code = codeOf(link);
+    if (uri == null || code == null || host.trim().isEmpty) return null;
+    final origin = Uri.tryParse(
+      host.contains('://') ? host : 'https://$host',
+    );
+    if (origin == null || origin.host.isEmpty) return null;
+    return Uri(
+      scheme: origin.scheme.isEmpty ? uri.scheme : origin.scheme,
+      host: origin.host,
+      // Never inherit the old port. A loopback link carries the server's own
+      // port, 49374; a tunnel serves on 443 and inheriting would send the
+      // request to a port nothing is listening on.
+      port: origin.hasPort ? origin.port : null,
+      path: uri.path,
+    ).toString();
+  }
 
   static final _urlPattern = RegExp(r'https?://[^\s"<>]+');
 

@@ -579,6 +579,9 @@ class _ErrorCard extends StatelessWidget {
   }
 }
 
+/// Sentinel meaning "let the user paste the link themselves".
+const _manual = '<paste a different link>';
+
 /// Adds a server: password or pairing link, the two ways a phone is trusted.
 class AddServerScreen extends ConsumerStatefulWidget {
   const AddServerScreen({super.key, this.prefill});
@@ -754,8 +757,8 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
     );
     if (raw == null || !mounted) return;
 
-    final link = PairingLink.tryParse(raw);
-    if (link == null) {
+    final found = PairingLink.all(raw);
+    if (found.isEmpty) {
       messenger.showSnackBar(
         const SnackBar(
           content: Text('That QR code is not an OpenCode pairing link'),
@@ -763,7 +766,114 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
       );
       return;
     }
-    _link.text = link;
+
+    // `opencode pair` prints one link per reachable address and encodes only
+    // the first into the QR, which is usually loopback. On a phone that address
+    // is the phone, so picking it silently would fail with a confusing error.
+    final chosen = await _chooseTarget(found.first);
+    if (chosen == null || !mounted) return;
+    _link.text = chosen;
+    setState(() {});
+  }
+
+  /// Asks which address to use when the payload is not usable as printed.
+  ///
+  /// Returns null when the user backs out.
+  Future<String?> _chooseTarget(String link) async {
+    final reachable = PairingLink.all(_link.text).where(
+      (candidate) => !PairingLink.isLoopback(candidate),
+    );
+    final options = <({String label, String link, bool ok})>[
+      for (final candidate in reachable)
+        (label: _hostLabel(candidate), link: candidate, ok: true),
+    ];
+
+    // Same code, different host: works for any address the phone has reached.
+    for (final host in await ref.read(remoteHostsProvider.future)) {
+      final retargeted = PairingLink.retarget(link, host);
+      if (retargeted == null) continue;
+      if (options.any((o) => o.link == retargeted)) continue;
+      options.add((label: _hostLabel(retargeted), link: retargeted, ok: true));
+    }
+
+    if (options.isEmpty) {
+      return _explainLoopback(link);
+    }
+    if (!PairingLink.isLoopback(link)) return link;
+    if (!mounted) return null;
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        final scheme = Theme.of(sheetContext).colorScheme;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+                child: Text(
+                  'That QR points at the phone',
+                  style: Theme.of(sheetContext).textTheme.titleMedium,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: Text(
+                  'The code it carries also works on another address. Pick one '
+                  'this phone can reach.',
+                  style: Theme.of(sheetContext).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              for (final option in options)
+                ListTile(
+                  leading: Icon(Icons.dns_outlined, color: scheme.primary),
+                  title: Text(option.label),
+                  onTap: () => Navigator.of(sheetContext).pop(option.link),
+                ),
+              ListTile(
+                leading: Icon(Icons.edit_outlined, color: scheme.onSurfaceVariant),
+                title: const Text('Paste a different link'),
+                onTap: () => Navigator.of(sheetContext).pop(_manual),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    return choice == _manual ? null : choice;
+  }
+
+  /// Nothing to offer: say what happened and leave the field for typing.
+  Future<String?> _explainLoopback(String link) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('That QR points at the phone'),
+        content: Text(
+          'It carries a code for ${PairingLink.hostOf(link)}, which on a phone '
+          'is the phone itself. Run `opencode pair --remote` on the host and '
+          'paste the remote link instead.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+    return null;
+  }
+
+  String _hostLabel(String link) {
+    final host = PairingLink.hostOf(link);
+    final scheme = Uri.tryParse(link)?.scheme ?? 'http';
+    return host == null ? link : '$scheme://$host';
   }
 
   Future<void> _submit() async {
@@ -796,10 +906,21 @@ class _AddServerScreenState extends ConsumerState<AddServerScreen> {
           label: label,
         );
       } else {
-        final raw = _link.text.trim();
+        var raw = _link.text.trim();
         if (raw.isEmpty) {
           setState(() => _error = 'Paste the link printed by `opencode pair`');
           return;
+        }
+        // Pasting the whole `opencode pair` output brings both links, and the
+        // first one is loopback. Ask which to use before spending the code:
+        // it is single use, so a wrong guess costs the user a new pairing run.
+        final first = PairingLink.tryParse(raw);
+        final needsChoice = PairingLink.all(raw).length > 1 ||
+            (first != null && PairingLink.isLoopback(first));
+        if (needsChoice && first != null) {
+          final chosen = await _chooseTarget(first);
+          if (chosen == null || !mounted) return;
+          raw = chosen;
         }
         final hosts = await ref.read(remoteHostsProvider.future);
         final redeemed = await OpenCodeApi.redeemPairingLink(
