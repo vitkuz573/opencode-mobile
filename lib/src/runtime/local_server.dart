@@ -439,6 +439,64 @@ class LocalServerHandle {
     return known == null ? 'errno $code' : 'errno $code, $known';
   }
 
+  /// Picks up a server that is already running.
+  ///
+  /// The server is a child process of the app, but it outlives the app: the
+  /// foreground service keeps the app alive, and the user closing the app does
+  /// not take a running server down with it. That means the app can open onto
+  /// a server it no longer holds a handle to, and the credentials it needs are
+  /// in the file the server wrote.
+  ///
+  /// The port is probed before anything is believed. A registry left behind by
+  /// a server that has since been killed describes an address nothing is
+  /// listening on, and connecting to it would fail with a timeout instead of
+  /// the clear "the server is not running".
+  ///
+  /// Returns null when there is nothing to adopt, which is the normal case and
+  /// not an error: most launches have no server running.
+  Future<LocalServerStatus?> adopt() async {
+    final registry = await _readRegistryAt(_stateRegistryPath);
+    if (registry == null) return null;
+    final password = registry['password'];
+    final url = registry['url'];
+    if (password is! String ||
+        password.isEmpty ||
+        url is! String) {
+      return null;
+    }
+    final port = Uri.tryParse(url)?.port;
+    if (port == null ||
+        port < 1 ||
+        port > 65535 ||
+        !await _isReachable(port)) {
+      return null;
+    }
+    return LocalServerStatus(
+      phase: LocalServerPhase.running,
+      runtimeVersion: registry['version'] is String
+          ? registry['version'] as String
+          : null,
+      port: port,
+      password: password,
+      address: url,
+      // When the server began, taken from the file it wrote rather than from
+      // the clock now: the uptime shown against a server the app just rejoined
+      // would otherwise start counting from zero and understate it.
+      startedAt: _writtenAt(_stateRegistryPath),
+    );
+  }
+
+  /// When [path] was last written, or now when that cannot be established.
+  static DateTime _writtenAt(String path) {
+    try {
+      final file = File(path);
+      if (file.existsSync()) return file.lastModifiedSync();
+    } catch (_) {
+      // A timestamp is decoration; never fail a rejoin over it.
+    }
+    return DateTime.now();
+  }
+
   /// The file `opencode serve` records its password in.
   ///
   /// With `--service` the server never prints the password: it only appears
@@ -447,9 +505,19 @@ class LocalServerHandle {
   String get _registryPath =>
       '${paths.home}/.config/opencode/service.json';
 
+  /// The service's own record of itself: address, pid, version and password.
+  ///
+  /// This is the file to read when picking up a server someone else started —
+  /// or this app started before it was closed. The one above carries only a
+  /// password and no address, which is enough to authenticate to a server we
+  /// are already holding but not enough to find one.
+  String get _stateRegistryPath =>
+      '${paths.home}/.local/state/opencode/service.json';
+
   Future<void> _clearServiceRegistry() async {
-    final file = File(_registryPath);
-    if (file.existsSync()) {
+    for (final path in [_registryPath, _stateRegistryPath]) {
+      final file = File(path);
+      if (!file.existsSync()) continue;
       try {
         await file.delete();
       } catch (_) {
@@ -460,8 +528,13 @@ class LocalServerHandle {
   }
 
   /// What the server wrote about itself.
-  Future<Map<String, Object?>?> _readServiceRegistry() async {
-    final file = File(_registryPath);
+  Future<Map<String, Object?>?> _readServiceRegistry() =>
+      _readRegistryAt(_registryPath);
+
+  /// The contents of the registry file at [path], retried while it is being
+  /// rewritten.
+  Future<Map<String, Object?>?> _readRegistryAt(String path) async {
+    final file = File(path);
     if (!file.existsSync()) return null;
     for (var attempt = 0; attempt < 20; attempt++) {
       try {

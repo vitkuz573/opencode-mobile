@@ -108,13 +108,14 @@ class ServerProfile {
   );
 
   ServerProfile copyWith({
+    String? secret,
     String? label,
     int? lastUsedAt,
     String? version,
   }) => ServerProfile(
     baseUrl: baseUrl,
     authMode: authMode,
-    secret: secret,
+    secret: secret ?? this.secret,
     label: label ?? this.label,
     lastUsedAt: lastUsedAt ?? this.lastUsedAt,
     version: version ?? this.version,

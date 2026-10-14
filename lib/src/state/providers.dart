@@ -8,6 +8,7 @@ import '../data/events.dart';
 import '../data/models.dart';
 import '../data/pairing.dart';
 import '../data/stats.dart';
+import 'local_server.dart';
 import 'profile_store.dart';
 
 enum ConnectionPhase { idle, connecting, connected, error }
@@ -107,7 +108,13 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
     return created;
   }
 
-  Future<bool> connect(ServerProfile profile) async {
+  Future<bool> connect(ServerProfile stored) async {
+    // A server that lives in this phone mints a new password every time it
+    // starts, so the one saved against its profile is always the previous one.
+    // While that server is up the password it is actually using is already
+    // known, and the stale one is a 401 against a server working perfectly
+    // well. Nothing is started here: only the credential is corrected.
+    final profile = await _withLiveLocalPassword(stored) ?? stored;
     final log = ref.read(appLogProvider);
     log.info('net', 'connecting to ${profile.displayHost} '
         '(${profile.authMode.name})');
@@ -160,6 +167,24 @@ class ConnectionController extends AsyncNotifier<ConnectionState> {
       );
       return false;
     }
+  }
+
+  /// The same profile carrying the password the phone's server is using now.
+  ///
+  /// Returns null for every other server, and for the phone's own server when
+  /// it is not running or the stored password is already the live one.
+  Future<ServerProfile?> _withLiveLocalPassword(ServerProfile stored) async {
+    if (stored.authMode != AuthMode.basic) return null;
+    if (!PairingLink.isLoopback(stored.baseUrl)) return null;
+    // The device check is asynchronous, and until it lands the provider says
+    // nothing about a server that is very much running.
+    final local = ref.read(localServerProvider.notifier);
+    await local.ensureLoaded();
+    final live = local.state.status;
+    final password = live.password;
+    if (!live.isRunning || password == null) return null;
+    if (password == stored.secret) return null;
+    return stored.copyWith(secret: password);
   }
 
   Future<void> _rememberHosts(ServerInfo info) {

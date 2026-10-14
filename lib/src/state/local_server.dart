@@ -171,7 +171,16 @@ class LocalServerController extends Notifier<LocalServerState> {
     state = state.copyWith(status: status);
   }
 
-  /// Re-reads what is installed on the device.
+  /// Completes the first check of the device, if it is still in flight.
+  ///
+  /// Reading this provider early gives a state that says nothing yet, and a
+  /// caller deciding on "is the phone's server up?" from that decides wrongly.
+  Future<void> ensureLoaded() async {
+    if (state.loading) await refreshRuntime();
+  }
+
+  /// Re-reads what is installed on the device, and picks up a server that is
+  /// still running from the last time the app was open.
   Future<void> refreshRuntime() async {
     try {
       final installer = await ref.read(runtimeInstallerProvider.future);
@@ -184,6 +193,18 @@ class LocalServerController extends Notifier<LocalServerState> {
         updateAvailable: installed != null && installed != latest,
         loading: false,
       );
+
+      // A server that was left running keeps running when the app is closed,
+      // so the app has to rejoin it rather than report it gone. This adopts
+      // what is already up; it never starts anything.
+      if (installed != null && !state.status.isRunning) {
+        final adopted = await (await _handleOf()).adopt();
+        if (adopted != null && ref.mounted) {
+          ref.read(appLogProvider).info('local',
+              'rejoined the server already running on port ${adopted.port}');
+          _reportStatus(adopted);
+        }
+      }
     } catch (error, stack) {
       if (!ref.mounted) return;
       ref.read(appLogProvider).error('runtime', 'could not read runtime: $error');
@@ -334,6 +355,9 @@ class LocalServerController extends Notifier<LocalServerState> {
   }
 
   /// Stops the server and lets the screen go back to the foreground.
+  ///
+  /// Stopping is the user taking the server down, so the app does not bring it
+  /// back on the next launch.
   Future<void> stop() async {
     final handle = _handle;
     if (handle != null) await handle.stop();
