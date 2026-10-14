@@ -43,13 +43,23 @@ is honoured, capped, with jitter.
 
 - P-256 key, generated locally with platform entropy. PKCS#8 PEM on disk,
   sent nowhere.
-- PKCS#10 certification request, DER, base64: `CN=<hostname>` plus a
-  `subjectAltName` with the host and `*.<hostname>` (routes are one label in
-  front of the host; without the wildcard every route is refused). ECDSA with
+- PKCS#10 certification request sent as bare base64 DER (no PEM armor — the
+  service fails anything else at parse, before looking at the ASN.1):
+  `CN=<hostname>` plus an `extensionRequest` attribute carrying one SAN
+  extension with the host and `*.<hostname>` (routes are one label in front
+  of the host; without the wildcard every route is refused). The full
+  nesting — Attribute, values SET, `Extensions` SEQUENCE OF, Extension —
+  is load-bearing: the service accepts what `openssl req -addext` produces
+  and refuses the request with the `Extensions` layer missing. ECDSA with
   SHA-256, parameters omitted. The request signs exactly the bytes sent.
+  Verified live: claim → request → poll → issued → deleted.
 - The ASN.1 subset is hand-written (`lib/src/runtime/tunnel/der.dart`):
   shortest-form DER, no optional empties, byte-for-byte assertable in tests.
-  It is not a general library and does not try to be one.
+  It is not a general library and does not try to be one. Pointycastle has
+  the CSR skeleton but no builder for the SAN extension, so depending on it
+  would leave two encoders in one request; one local encoder is the smaller
+  risk, and an independent-decoder test plus a past `openssl -verify` keep
+  it honest.
 
 Both the identity and the issued certificate persist in the app's support
 directory (`opentunnel/`), written atomically before they are needed, so an

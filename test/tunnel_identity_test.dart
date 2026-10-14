@@ -6,8 +6,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:opencode_mobile/src/runtime/tunnel/der.dart';
 import 'package:opencode_mobile/src/runtime/tunnel/tunnel_identity.dart';
 import 'package:pointycastle/api.dart';
+import 'package:pointycastle/asn1.dart';
 import 'package:pointycastle/ecc/api.dart';
 import 'package:pointycastle/ecc/ecc_fp.dart' as fp;
+
+
+/// The DER inside a PEM document, for decoders that read bytes, not armor.
+Uint8List _derOf(String pem) {
+  final body = pem
+      .split('\n')
+      .where((line) => line.isNotEmpty && !line.startsWith('-----'))
+      .join();
+  return base64.decode(body);
+}
 
 void main() {
   group('Der', () {
@@ -66,14 +77,23 @@ void main() {
     test('asks for the host and one label in front of it', () {
       final identity = TunnelIdentity.create(host);
       final request =
-          DerNode.read(base64.decode(identity.certificationRequest)).single;
+          DerNode.read(_derOf(identity.certificationRequest)).single;
       final info = request.children.first;
 
       // attributes [0] is tagged implicitly, so what sits inside it is the
-      // Attribute itself, not a SET of them.
+      // Attribute itself, not a SET of them: extensionRequest carrying one
+      // SAN extension, like opencode's own requests.
       final attribute = info.children[3].children.single;
-      expect(attribute.children.first.asObjectIdentifier, '2.5.29.17');
-      final generalNames = attribute.children[1].children.single.children;
+      expect(
+        attribute.children.first.asObjectIdentifier,
+        '1.2.840.113549.1.9.14',
+      );
+      final extensions = attribute.children[1].children.single.children;
+      final extension = extensions.single.children;
+      expect(extension.first.asObjectIdentifier, '2.5.29.17');
+      final generalNames = DerNode.read(
+        extension[1].value,
+      ).single.children;
       final covered = generalNames.map((n) => String.fromCharCodes(n.value)).toList();
 
       // A wildcard is not decoration: routes are `<route>.<hostname>`, and a
@@ -83,7 +103,7 @@ void main() {
 
     test('signs the exact bytes it sends', () {
       final identity = TunnelIdentity.create(host);
-      final csr = DerNode.read(base64.decode(identity.certificationRequest)).single;
+      final csr = DerNode.read(_derOf(identity.certificationRequest)).single;
       expect(csr.children.length, 3);
 
       final info = csr.children[0];
@@ -146,6 +166,66 @@ void main() {
           .where((l) => !l.startsWith('---'))
           .join();
       expect(request, isNot(contains(key)));
+    });
+
+    test('parses with an independent decoder', () {
+      // The strictness gate. Every structural assertion above goes through
+      // DerNode, which is ours and shares our assumptions, so a systematic
+      // encoding mistake would pass them all. This parses the same bytes with
+      // pointycastle's own decoder instead: two implementations have to agree
+      // on framing, tags and structure, or the CSR never reaches a CA.
+      // openssl verified the same shape by hand once (`req -verify`);
+      // this keeps it verified on every run.
+      final identity = TunnelIdentity.create(host);
+      final bytes = _derOf(identity.certificationRequest);
+      final parser = ASN1Parser(bytes);
+      final root = parser.nextObject();
+      // Exactly one object consuming everything: no trailing garbage that a
+      // lenient reader would swallow, no truncation a strict one would pad.
+      expect(parser.hasNext(), isFalse);
+      expect(root, isA<ASN1Sequence>());
+      final top = (root as ASN1Sequence).elements!;
+      expect(top, hasLength(3));
+
+      final info = (top[0] as ASN1Sequence).elements!;
+      expect(info, hasLength(4));
+      expect((info[0] as ASN1Integer).integer, BigInt.zero);
+
+      final algorithm = (top[1] as ASN1Sequence).elements!;
+      expect(
+        (algorithm[0] as ASN1ObjectIdentifier).objectIdentifierAsString,
+        '1.2.840.10045.4.3.2',
+      );
+
+      // The [0] attributes block is implicit, so their parser - like ours -
+      // must find the Attribute itself, not a SET of them: extensionRequest
+      // carrying one SAN extension, like opencode's own requests.
+      final attributes = ASN1Parser(info[3].valueBytes!).nextObject();
+      expect(attributes, isA<ASN1Sequence>());
+      final attribute = (attributes as ASN1Sequence).elements!;
+      expect(
+        (attribute[0] as ASN1ObjectIdentifier).objectIdentifierAsString,
+        '1.2.840.113549.1.9.14',
+      );
+      final extensions =
+          ((attribute[1] as ASN1Set).elements!.single as ASN1Sequence)
+              .elements!;
+      final extension =
+          (extensions.single as ASN1Sequence).elements!;
+      expect(
+        (extension[0] as ASN1ObjectIdentifier).objectIdentifierAsString,
+        '2.5.29.17',
+      );
+      final names = ASN1Parser(
+        (extension[1] as ASN1OctetString).valueBytes!,
+      ).nextObject();
+      expect(names, isA<ASN1Sequence>());
+      expect(
+        ((names as ASN1Sequence).elements!).map(
+          (n) => String.fromCharCodes(n.valueBytes!),
+        ),
+        [host, '*.$host'],
+      );
     });
   });
 }

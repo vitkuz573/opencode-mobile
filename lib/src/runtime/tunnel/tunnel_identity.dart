@@ -44,7 +44,7 @@ class TunnelIdentity {
   /// PKCS#8, PEM. Written to disk, sent nowhere.
   final String privateKeyPem;
 
-  /// The signed PKCS#10 request, base64: what the service issues against.
+  /// The signed PKCS#10 request, PEM: what the service issues against.
   final String certificationRequest;
 
   /// Generates a fresh key and asks for a certificate covering [hostname].
@@ -69,8 +69,12 @@ class TunnelIdentity {
         _pkcs8(private, public),
         base64.encode,
       ),
-      certificationRequest: base64.encode(
+      // PEM armor, not bare base64: the service parses a document, and bare
+      // base64 fails its parser before the ASN.1 is ever looked at.
+      certificationRequest: Der.pem(
+        'CERTIFICATE REQUEST',
         _certificationRequest(private, public, hostname, random),
+        base64.encode,
       ),
     );
   }
@@ -134,11 +138,18 @@ class TunnelIdentity {
         ]),
       ]);
 
-  /// `subjectAltName` carrying the host and everything one label in front of it.
+  /// The `extensionRequest` attribute carrying the SAN extension.
   ///
-  /// Routes are addressed as `<route>.<hostname>`, so without the wildcard every
-  /// route is refused by the visitor's client. The common name cannot stand in:
-  /// no client has fallen back to it for years.
+  /// Routes are addressed as `<route>.<hostname>`, so the SAN holds the host
+  /// and everything one label in front of it: without the wildcard every
+  /// route is refused by the visitor's client. The common name cannot stand
+  /// in: no client has fallen back to it for years.
+  ///
+  /// The nesting is the full standard one — Attribute{extensionRequest,
+  /// {Extensions{Extension}}} — matching what opencode itself sends and what
+  /// `openssl req -addext` produces, byte for byte. The middle `Extensions`
+  /// SEQUENCE OF is easy to skip (one Extension looks complete without it),
+  /// and the service refuses the request without it.
   ///
   /// This returns the Attribute SEQUENCE itself, not a SET of them: the
   /// `attributes` field of a request is tagged `[0]` *implicitly*, so the tag
@@ -146,14 +157,24 @@ class TunnelIdentity {
   /// structure a strict parser refuses, which is what a certificate authority
   /// is.
   static Uint8List _subjectAltName(String hostname) => Der.sequence([
-        Der.objectIdentifier('2.5.29.17'),
+        Der.objectIdentifier('1.2.840.113549.1.9.14'),
         Der.set([
           Der.sequence([
-            Der.contextPrimitive(2, Uint8List.fromList(ascii.encode(hostname))),
-            Der.contextPrimitive(
-              2,
-              Uint8List.fromList(ascii.encode('*.$hostname')),
-            ),
+            Der.sequence([
+              Der.objectIdentifier('2.5.29.17'),
+              Der.octetString(
+                Der.sequence([
+                  Der.contextPrimitive(
+                    2,
+                    Uint8List.fromList(ascii.encode(hostname)),
+                  ),
+                  Der.contextPrimitive(
+                    2,
+                    Uint8List.fromList(ascii.encode('*.$hostname')),
+                  ),
+                ]),
+              ),
+            ]),
           ]),
         ]),
       ]);
