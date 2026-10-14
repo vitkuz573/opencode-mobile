@@ -45,6 +45,9 @@ dependencies:
   crypto: ^3.0.7
   path_provider: ^2.1.6
   qr_flutter: ^4.1.0
+  # P-256 keys and the PKCS#10 requests the tunnel certificate is issued
+  # against. dart:io terminates TLS but has no way to ask a CA for one.
+  pointycastle: ^4.0.0
 
 dev_dependencies:
   flutter_test:
