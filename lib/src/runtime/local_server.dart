@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/services.dart';
 
@@ -124,6 +125,23 @@ class LocalServerHandle {
   StreamSubscription<String>? _stderr;
   Timer? _startupTimer;
 
+  /// Identifies this server in the registry it publishes.
+  ///
+  /// Minted per start: a server that is stopped and started again is a
+  /// different server, and anything caching the old id should see that.
+  String _serviceId = '';
+
+  /// An RFC 4122 version 4 identifier, from the platform's own source of
+  /// randomness rather than a seeded generator.
+  static String _newServiceId() {
+    final bytes = List<int>.generate(16, (_) => Random.secure().nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+        '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+  }
+
   /// Port of the app's CONNECT relay, when one is running. Set on [start];
   /// every later spawn (`pair`, `serve`) inherits it.
   int? _proxyPort;
@@ -181,6 +199,7 @@ class LocalServerHandle {
     // Clearing it means whatever appears next was written by the process about
     // to start, which is what makes it safe to believe.
     await _clearServiceRegistry();
+    _serviceId = _newServiceId();
 
     _emit(
       LocalServerStatus(
@@ -197,21 +216,25 @@ class LocalServerHandle {
       paths.loader(_loaderDir),
       paths.binary,
       'serve',
-      // `--service` is what lets `opencode pair` find this server later instead
-      // of trying to spawn a copy of itself.
-      '--service',
-      // Loopback, deliberately.
+      // No `--service`, deliberately.
       //
-      // `opencode pair` finds a running service through the address the server
-      // registered. Registering 0.0.0.0 makes that address unreachable, so pair
-      // decides the service is dead and tries to spawn its own - which cannot
-      // work here, because the binary may be read but never executed. On
-      // 127.0.0.1 pair finds the server and mints a code.
+      // `--service` makes the server chdir into `$HOME` and pin every session
+      // to it: the `directory` on a request is ignored, so one directory is
+      // the whole world. That shows up as the project being the runtime's own
+      // home folder instead of the folder the user keeps their work in.
       //
-      // A pairing code is not bound to an address, so a link printed for
-      // loopback is retargeted at whatever address the other device can reach.
-      // Being reachable on the network is therefore an explicit step, not a
-      // default that quietly exposes a server holding the user's files.
+      // `opencode pair` finds a running server through the service registry, not
+      // through this flag, so the flag is not needed for pairing - the app
+      // writes that registry itself (see `_publishService`). Without it the
+      // server keeps the working directory it was started in, which is the
+      // project folder.
+      //
+      // Loopback, still deliberately. Pairing reads the registered address and
+      // has to be able to reach it; 0.0.0.0 is an address nothing can connect
+      // to, and a link printed for loopback is retargeted at whatever address
+      // the other device can reach. Being reachable on the network is an
+      // explicit step, not a default that quietly exposes a server holding the
+      // user's files.
       '--hostname',
       '127.0.0.1',
       '--port',
@@ -678,6 +701,44 @@ class LocalServerHandle {
         startedAt: _status.startedAt ?? DateTime.now(),
       ),
     );
+    // Written once both halves are known, and rewritten if the second arrives
+    // on its own line - which is the normal order, since the address is printed
+    // before the password.
+    unawaited(_publishService());
+  }
+
+  /// Records the running server where `opencode pair` looks for it.
+  ///
+  /// The server does not write this itself any more, because it no longer runs
+  /// with `--service`. Pairing still works: it reads the registry, connects to
+  /// the address in it and mints a code, and it never needs to know who wrote
+  /// the file. A registry that only this app writes is also a registry that
+  /// cannot be mistaken for a server belonging to something else.
+  Future<void> _publishService() async {
+    final status = _status;
+    final address = status.address;
+    final password = status.password;
+    final pid = _process?.pid;
+    if (address == null || password == null || pid == null) return;
+    try {
+      final file = File(_stateRegistryPath);
+      await file.parent.create(recursive: true);
+      await file.writeAsString(
+        jsonEncode({
+          'id': _serviceId,
+          'version': status.runtimeVersion ?? '',
+          'url': address,
+          'pid': pid,
+          'password': password,
+        }),
+        flush: true,
+      );
+    } catch (error) {
+      // Without the registry, pairing falls back to starting a service of its
+      // own, which cannot work here. The server itself is running either way,
+      // so this is reported and not treated as a failure to start.
+      _lines.writeln('Could not write the service registry: $error');
+    }
   }
 
   void _onExit(int code) {

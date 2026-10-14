@@ -90,13 +90,41 @@ Without `HOME` the server fails at startup trying to create `/.local/share`.
 The working directory matters just as much: OpenCode treats it as the project
 it is serving, and that is what shows up in the app's project list.
 
+## Why the server does not run with `--service`
+
+`serve --service` makes the server `chdir` into `$HOME` and pin every session
+to it. The `directory` on a request is ignored, so one directory is the whole
+world, and the project the app lists is the runtime's own home folder rather
+than the folder the user keeps work in. Verified on the device: a session
+created with `?directory=<workspace>` came back with `location.directory`
+pointing at `$HOME`.
+
+Running without `--service` keeps the working directory the app started the
+server in, so the project is the workspace and `directory` is honoured.
+
+Pairing does not depend on the flag. `opencode pair` finds a running server
+through the service registry (`<home>/.local/state/opencode/service.json`),
+never through the flag itself, so the app writes that registry itself once the
+server reports its address and password — `{id, version, url, pid, password}`.
+A registry only this app writes is also a registry that cannot be mistaken for
+a server belonging to something else, and the app clears it before each start
+so anything it finds on a later launch is proof of a server it launched.
+
+`opencode pair --server <url>` is not an alternative: `pair` rejects
+`--server` as an unrecognised flag.
+
 ## Credentials
 
-With `--service` the server prints only the listening line; the password
-never appears on stdout. It lives in `<home>/.config/opencode/service.json`
-(`{"password": ...}`), rewritten on every start — the app clears it before
-launching and polls it until the password appears. That file is the live
-credential (verified with an authenticated request), not a stale copy.
+The server prints both its address and its password on stdout:
+
+```
+server listening on http://127.0.0.1:4197
+server password 1gQZb7XsvxRs8TvHBeZeymiYZOVcFXs5y5VXT64IMY0
+```
+
+Those two lines are the source; the registry is written from them. A password
+found in `<home>/.config/opencode/service.json` is a leftover of `--service`
+mode and is not read.
 
 ## Verified
 
@@ -140,8 +168,9 @@ A separate provider key is not required.
 - **`opencode` spawning itself does not work.** The CLI re-executes
   `process.execPath` to start its own service, and when the loader is the
   executable that path is the loader, so it fails with "cannot load serve".
-  Every command the app needs is therefore run with `serve --service` already
-  up, which is what `pair` looks for.
+  The server is therefore started by the app and its registry written by the
+  app, so `pair` connects to the running server instead of trying to spawn a
+  second one.
 
 ## DNS in the runtime
 
