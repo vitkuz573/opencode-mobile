@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opencode_mobile/src/runtime/tunnel/tunnel_api.dart';
 
 /// The tunnel service's OpenAPI document is the contract; the hand-written
 /// client is the implementation. Code generation was evaluated and rejected
@@ -53,7 +54,7 @@ void main() {
   });
 
   group('operations the client depends on', () {
-    test('claiming exists with an optional body', () {
+    test('claiming sends the empty object the schema allows', () {
       final claim = operations['POST /api/tunnel'] as Map;
       expect(claim['operationId'], 'tunnel.tunnel.create');
       final content =
@@ -114,7 +115,7 @@ void main() {
       );
     });
 
-    test('every certificate state the client folds', () {
+    test('declares every certificate state the client parses', () {
       for (final state in ['Ready', 'Challenge', 'Issuing', 'Failed']) {
         final schema =
             schemaOf(spec, '#/components/schemas/Certificate_State$state'
@@ -127,6 +128,16 @@ void main() {
       expect(
         (ready['properties'] as Map).keys,
         containsAll(['certificate', 'chain', 'expiry']),
+      );
+      // Parsed and stored, never acted on: the service resolves the challenge
+      // itself. Asserted here so dropping the fields breaks loudly instead of
+      // silently starving whatever the client was keeping them for.
+      final challenge =
+          schemaOf(spec, '#/components/schemas/Certificate_StateChallengeEncoded')
+              as Map;
+      expect(
+        (challenge['properties'] as Map).keys,
+        containsAll(['token', 'key']),
       );
     });
 
@@ -150,14 +161,11 @@ void main() {
   });
 
   group('no unmapped failures', () {
-    test('every declared client error status is accounted for', () {
-      // Statuses the client must translate or deliberately propagate: any
-      // 4xx the service can answer with and the client has never heard of
-      // fails this test, which is the point — an unknown failure mode should
-      // break the build, not reach a phone as a bare number. Success codes
-      // and the Cloudflare range (an edge behaviour, not in the document)
-      // are out of scope here.
-      const known = {'400', '401', '404', '409'};
+    test('the document declares exactly the failures the client handles', () {
+      // Single source of truth, enforced both ways: TunnelApi names what it
+      // meets, and this asserts the service declares nothing else. A new
+      // failure mode breaks here first and gains its handling in the same
+      // change, instead of reaching a phone as a bare number nobody has read.
       final seen = <String>{};
       for (final entry in operations.entries) {
         final responses = (entry.value as Map)['responses'] as Map?;
@@ -166,7 +174,46 @@ void main() {
           if ('$code'.startsWith('4')) seen.add('$code');
         }
       }
-      expect(seen.difference(known), isEmpty);
+      expect(
+        seen,
+        TunnelApi.handledClientErrorStatuses.map((code) => '$code').toSet(),
+      );
+    });
+
+    test('auth goes where the document says', () {
+      // The client relies on this shape: claiming has no token yet, the
+      // bridge carries its token in the attach message rather than a header,
+      // and everything else authenticates with a bearer token. If the service
+      // put bearer on claiming, the first launch would 401 with no test
+      // failing — so this asserts the shape instead of assuming it.
+      Map<String, Object?> securityOf(String operation) {
+        final op = operations[operation] as Map;
+        final explicit = op['security'];
+        if (explicit is List) {
+          return {
+            'empty': explicit.isEmpty,
+            'bearer': explicit.any(
+              (entry) => entry is Map && entry.containsKey('bearer'),
+            ),
+          };
+        }
+        return const {'empty': true, 'bearer': false};
+      }
+
+      for (final open in [
+        'POST /api/tunnel',
+        'GET /api/tunnel/{id}/connect',
+      ]) {
+        expect(securityOf(open), {'empty': true, 'bearer': false}, reason: open);
+      }
+      for (final guarded in [
+        'GET /api/tunnel/{id}',
+        'DELETE /api/tunnel/{id}',
+        'POST /api/tunnel/{id}/certificate',
+        'GET /api/tunnel/{id}/certificate',
+      ]) {
+        expect(securityOf(guarded)['bearer'], isTrue, reason: guarded);
+      }
     });
   });
 }

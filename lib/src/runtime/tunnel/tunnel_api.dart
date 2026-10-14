@@ -41,6 +41,17 @@ class TunnelApi implements TunnelService {
 
   static const baseUrl = 'https://opentunnel.xyz';
 
+  /// Every 4xx status the service declares that the client knows how to meet:
+  /// translated through the response message, never surfaced as a bare
+  /// number. The contract test asserts the service document declares exactly
+  /// this set — a new failure mode must break the build here first, gaining
+  /// its handling in the same change, rather than reaching a phone as a
+  /// number nobody has read.
+  ///
+  /// The Cloudflare 5xx range is deliberately absent: it is edge behaviour,
+  /// not in the document, and translated separately below.
+  static const handledClientErrorStatuses = {400, 401, 404, 409};
+
   /// The statuses a request that may already have arrived must not be retried
   /// on.
   ///

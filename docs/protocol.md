@@ -144,6 +144,17 @@ and rules by test, not by generation (`test/tunnel_contract_test.dart`):
 every operation the client calls, every payload field it reads and every
 error status the service declares is asserted there. Five endpoints do not
 repay a generator toolchain, while everything interesting — retries, polling,
-the bridge — is not in the document either way. Refresh the vendored file
-from `https://opentunnel.xyz/openapi.json` and rerun the test; green means
-nothing the client depends on changed.
+the bridge — is not in the document either way.
+
+The vendored file is byte-identical to what the service serves, minified and
+all: a one-line diff per schema change beats readability here, because this
+file is read by the test on every run and by a human only when that test
+fails. Refresh it by hand — CI must not depend on the network — whenever the
+tunnel misbehaves against a fresh eye, when the service announces a version
+bump, or when the contract test fails against a fresh fetch (which means the
+document drifted, not the client):
+
+```sh
+curl -s https://opentunnel.xyz/openapi.json -o tool/opentunnel-openapi.json
+flutter test test/tunnel_contract_test.dart
+```
