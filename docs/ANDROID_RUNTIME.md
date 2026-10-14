@@ -196,3 +196,39 @@ Publishing to the internet is driven by `opencode pair --remote`, and on this
 device it used to fail before reaching the relay with `getaddrinfo ETIMEOUT
 opentunnel.xyz` — the same blind resolver, not the app or the tunnel. It goes
 through the proxy like everything else now.
+
+## Publishing to the internet
+
+`opencode pair --remote` cannot work here, so publishing is the app's own. It
+claims a hostname with the service, mints a P-256 key and a certification
+request, gets a certificate back, and attaches a bridge. The bridge carries one
+visitor's connection at a time over a WebSocket, and the visitor's TLS is
+finished on this device.
+
+`opencode pair` still works against the tunnel, because the app writes the
+service registry itself rather than asking OpenCode to.
+
+### Why the TLS terminator is not in Dart
+
+`dart:io`'s `SecureServerSocket` hands over its socket only once a handshake is
+complete. For a byte relay that is a deadlock rather than an inconvenience: the
+server's half of the handshake has to reach the visitor *during* the handshake
+or the visitor never answers and the handshake never completes. BoringSSL had
+the whole flight ready — nearly 3 kB of ServerHello, certificate and finished —
+and there was nowhere to send it, because the stream only existed afterwards.
+
+So the terminator is `SSLEngine`, on the platform
+(`android/app/src/main/kotlin/.../tunnel/TlsTerminator.kt`), driven over a
+method channel. `SSLEngine` is a state machine that emits each flight as it is
+produced, which is what a relay needs and what `dart:io` does not offer.
+
+One session per connection rather than one shared listener: two visitors'
+ClientHellos arrive on the bridge indistinguishably, so a shared listener could
+not be matched to the visitor it belonged to.
+
+### Two directions of clear text
+
+Once TLS is done with the bytes, both directions are in the clear and they are
+opposite. What a visitor sends goes into the socket to the phone-hosted server.
+What that server answers comes back out of the pipe and is encrypted on the way
+to the visitor. Conflating them hands a visitor its own request back.
