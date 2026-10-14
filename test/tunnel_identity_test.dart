@@ -81,19 +81,10 @@ void main() {
       final info = request.children.first;
 
       // attributes [0] is tagged implicitly, so what sits inside it is the
-      // Attribute itself, not a SET of them: extensionRequest carrying one
-      // SAN extension, like opencode's own requests.
+      // Attribute itself, not a SET of them.
       final attribute = info.children[3].children.single;
-      expect(
-        attribute.children.first.asObjectIdentifier,
-        '1.2.840.113549.1.9.14',
-      );
-      final extensions = attribute.children[1].children.single.children;
-      final extension = extensions.single.children;
-      expect(extension.first.asObjectIdentifier, '2.5.29.17');
-      final generalNames = DerNode.read(
-        extension[1].value,
-      ).single.children;
+      expect(attribute.children.first.asObjectIdentifier, '2.5.29.17');
+      final generalNames = attribute.children[1].children.single.children;
       final covered = generalNames.map((n) => String.fromCharCodes(n.value)).toList();
 
       // A wildcard is not decoration: routes are `<route>.<hostname>`, and a
@@ -198,32 +189,19 @@ void main() {
       );
 
       // The [0] attributes block is implicit, so their parser - like ours -
-      // must find the Attribute itself, not a SET of them: extensionRequest
-      // carrying one SAN extension, like opencode's own requests.
+      // must find the Attribute itself, not a SET of them. Re-parse its raw
+      // content and walk down to the covered names.
       final attributes = ASN1Parser(info[3].valueBytes!).nextObject();
       expect(attributes, isA<ASN1Sequence>());
       final attribute = (attributes as ASN1Sequence).elements!;
       expect(
         (attribute[0] as ASN1ObjectIdentifier).objectIdentifierAsString,
-        '1.2.840.113549.1.9.14',
-      );
-      final extensions =
-          ((attribute[1] as ASN1Set).elements!.single as ASN1Sequence)
-              .elements!;
-      final extension =
-          (extensions.single as ASN1Sequence).elements!;
-      expect(
-        (extension[0] as ASN1ObjectIdentifier).objectIdentifierAsString,
         '2.5.29.17',
       );
-      final names = ASN1Parser(
-        (extension[1] as ASN1OctetString).valueBytes!,
-      ).nextObject();
-      expect(names, isA<ASN1Sequence>());
+      final names = (attribute[1] as ASN1Set).elements!
+          .single as ASN1Sequence;
       expect(
-        ((names as ASN1Sequence).elements!).map(
-          (n) => String.fromCharCodes(n.valueBytes!),
-        ),
+        names.elements!.map((n) => String.fromCharCodes(n.valueBytes!)),
         [host, '*.$host'],
       );
     });

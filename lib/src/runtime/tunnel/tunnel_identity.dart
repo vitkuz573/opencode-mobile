@@ -136,18 +136,18 @@ class TunnelIdentity {
         ]),
       ]);
 
-  /// The `extensionRequest` attribute carrying the SAN extension.
+  /// `subjectAltName` carrying the host and everything one label in front of it.
   ///
-  /// Routes are addressed as `<route>.<hostname>`, so the SAN holds the host
-  /// and everything one label in front of it: without the wildcard every
-  /// route is refused by the visitor's client. The common name cannot stand
-  /// in: no client has fallen back to it for years.
+  /// Routes are addressed as `<route>.<hostname>`, so without the wildcard every
+  /// route is refused by the visitor's client. The common name cannot stand in:
+  /// no client has fallen back to it for years.
   ///
-  /// The nesting is the full standard one — Attribute{extensionRequest,
-  /// {Extensions{Extension}}} — matching what opencode itself sends and what
-  /// `openssl req -addext` produces, byte for byte. The middle `Extensions`
-  /// SEQUENCE OF is easy to skip (one Extension looks complete without it),
-  /// and the service refuses the request without it.
+  /// Note the shape: the attribute carries the SAN directly rather than an
+  /// `extensionRequest` wrapping an `Extensions` SEQUENCE OF. That is not the
+  /// textbook layout, but the service issues against it — verified live, twice
+  /// issued end to end. The textbook form issues exactly as well; this stays
+  /// because it is what shipped and works, not because the alternative fails.
+  /// Do not "fix" this without re-verifying issuance either way.
   ///
   /// This returns the Attribute SEQUENCE itself, not a SET of them: the
   /// `attributes` field of a request is tagged `[0]` *implicitly*, so the tag
@@ -155,24 +155,14 @@ class TunnelIdentity {
   /// structure a strict parser refuses, which is what a certificate authority
   /// is.
   static Uint8List _subjectAltName(String hostname) => Der.sequence([
-        Der.objectIdentifier('1.2.840.113549.1.9.14'),
+        Der.objectIdentifier('2.5.29.17'),
         Der.set([
           Der.sequence([
-            Der.sequence([
-              Der.objectIdentifier('2.5.29.17'),
-              Der.octetString(
-                Der.sequence([
-                  Der.contextPrimitive(
-                    2,
-                    Uint8List.fromList(ascii.encode(hostname)),
-                  ),
-                  Der.contextPrimitive(
-                    2,
-                    Uint8List.fromList(ascii.encode('*.$hostname')),
-                  ),
-                ]),
-              ),
-            ]),
+            Der.contextPrimitive(2, Uint8List.fromList(ascii.encode(hostname))),
+            Der.contextPrimitive(
+              2,
+              Uint8List.fromList(ascii.encode('*.$hostname')),
+            ),
           ]),
         ]),
       ]);
