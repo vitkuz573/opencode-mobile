@@ -280,31 +280,40 @@ class TunnelApi implements TunnelService {
         'The tunnel service could not be reached while trying to $what: $cause.',
       );
     }
+    return TunnelApiException(
+      failureMessage(what: what, status: status, body: error.response?.data),
+    );
+  }
 
-    final body = error.response?.data;
+  /// The human sentence for a failed request with a status.
+  ///
+  /// Static and public so the contract test can prove every handled status
+  /// produces one: with the service's own words when it gives them, with a
+  /// named reason otherwise, and never a bare number. `handledClientErrorStatuses`
+  /// names the statuses this covers.
+  static String failureMessage({
+    required String what,
+    required int status,
+    Object? body,
+  }) {
     if (body is Map) {
       final message = body['message'];
       if (message is String && message.isNotEmpty) {
-        return TunnelApiException('Could not $what: $message');
+        return 'Could not $what: $message';
       }
     }
-
     final cloudflare = _cloudflare[status];
     if (cloudflare != null) {
-      return TunnelApiException(
-        'Could not $what: the tunnel service could not be reached '
-        '(Cloudflare $status, $cloudflare).',
-      );
+      return 'Could not $what: the tunnel service could not be reached '
+          '(Cloudflare $status, $cloudflare).';
     }
     // A 4xx with no body is the service telling us it did not like the request
     // without saying why. Naming the range is more use than the bare number.
     if (status >= 400 && status < 500) {
-      return TunnelApiException(
-        'Could not $what: the tunnel service rejected the request without '
-        'saying why (HTTP $status).',
-      );
+      return 'Could not $what: the tunnel service rejected the request without '
+          'saying why (HTTP $status).';
     }
-    return TunnelApiException('Could not $what (HTTP $status).');
+    return 'Could not $what (HTTP $status).';
   }
 
   // --- Shapes --------------------------------------------------------------

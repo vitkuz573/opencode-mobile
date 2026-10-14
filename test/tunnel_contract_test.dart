@@ -132,6 +132,9 @@ void main() {
       // Parsed and stored, never acted on: the service resolves the challenge
       // itself. Asserted here so dropping the fields breaks loudly instead of
       // silently starving whatever the client was keeping them for.
+      // That "whatever" is this assertion: nothing in the app reads these
+      // fields, and their only consumer is this contract — a shape change on
+      // the service side must surface here rather than rot unnoticed.
       final challenge =
           schemaOf(spec, '#/components/schemas/Certificate_StateChallengeEncoded')
               as Map;
@@ -180,31 +183,70 @@ void main() {
       );
     });
 
+    test('every handled status translates to a sentence', () {
+      // The set above would pass with entries the client only names. This
+      // calls the translation for each one, with and without the service's
+      // own words: no handled status may fall through to the bare-number
+      // template, which exists for statuses nobody has met, not for these.
+      for (final code in TunnelApi.handledClientErrorStatuses) {
+        expect(
+          TunnelApi.failureMessage(
+            what: 'test',
+            status: code,
+            body: {'message': 'boom'},
+          ),
+          contains('boom'),
+        );
+        final bare = TunnelApi.failureMessage(
+          what: 'test',
+          status: code,
+          body: null,
+        );
+        expect(bare, startsWith('Could not test'));
+        expect(bare, isNot(equals('Could not test (HTTP $code).')));
+      }
+    });
+
     test('auth goes where the document says', () {
       // The client relies on this shape: claiming has no token yet, the
       // bridge carries its token in the attach message rather than a header,
       // and everything else authenticates with a bearer token. If the service
       // put bearer on claiming, the first launch would 401 with no test
       // failing — so this asserts the shape instead of assuming it.
+      //
+      // A missing `security` key inherits from the document root rather than
+      // meaning "open": resolving it to open is a default that happens to
+      // match today and would silently misread the day the root changes.
+      List<Object?> rootSecurity() {
+        final root = spec['security'];
+        return root is List ? root : const [];
+      }
+
       Map<String, Object?> securityOf(String operation) {
         final op = operations[operation] as Map;
         final explicit = op['security'];
-        if (explicit is List) {
-          return {
-            'empty': explicit.isEmpty,
-            'bearer': explicit.any(
-              (entry) => entry is Map && entry.containsKey('bearer'),
-            ),
-          };
-        }
-        return const {'empty': true, 'bearer': false};
+        final effective = explicit is List
+            ? explicit
+            : rootSecurity();
+        return {
+          'declaredOpen':
+              explicit is List &&
+              explicit.isEmpty,
+          'bearer': effective.any(
+            (entry) => entry is Map && entry.containsKey('bearer'),
+          ),
+        };
       }
 
       for (final open in [
         'POST /api/tunnel',
         'GET /api/tunnel/{id}/connect',
       ]) {
-        expect(securityOf(open), {'empty': true, 'bearer': false}, reason: open);
+        expect(
+          securityOf(open),
+          {'declaredOpen': true, 'bearer': false},
+          reason: open,
+        );
       }
       for (final guarded in [
         'GET /api/tunnel/{id}',

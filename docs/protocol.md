@@ -146,15 +146,24 @@ error status the service declares is asserted there. Five endpoints do not
 repay a generator toolchain, while everything interesting — retries, polling,
 the bridge — is not in the document either way.
 
-The vendored file is byte-identical to what the service serves, minified and
-all: a one-line diff per schema change beats readability here, because this
-file is read by the test on every run and by a human only when that test
-fails. Refresh it by hand — CI must not depend on the network — whenever the
+The vendored file is byte-identical to what the service served at the last
+refresh, minified and all: a one-line diff per schema change beats
+readability here, because this file is read by the test on every run and by
+a human only when that test fails. (Stating the obvious before it rots: the
+byte-identity holds at refresh time. The test pins the shape the client
+depends on; the bytes will move with the service.)
+
+Drift is found by `tool/check_tunnel_spec.sh`, which fetches the live
+document and diffs it against the vendored one: silence and exit 0 on match,
+a diff and exit 1 otherwise. It is not a CI gate — builds must not depend on
+the network — it is a scheduled job and a human habit: run it when the
 tunnel misbehaves against a fresh eye, when the service announces a version
-bump, or when the contract test fails against a fresh fetch (which means the
-document drifted, not the client):
+bump, or weekly, whichever comes first. When it reports, refresh the vendored
+file and rerun the contract test; green means nothing the client depends on
+changed:
 
 ```sh
+./tool/check_tunnel_spec.sh
 curl -s https://opentunnel.xyz/openapi.json -o tool/opentunnel-openapi.json
 flutter test test/tunnel_contract_test.dart
 ```
