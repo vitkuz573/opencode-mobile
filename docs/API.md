@@ -148,6 +148,10 @@ must tolerate unknown types by ignoring them rather than failing.
 - `POST /api/session/{id}/interrupt?resume=` → `{ interrupted: bool }`.
 - `POST /api/session/{id}/permission/{requestID}/reply` body: `{ "reply": "once" | "always" | "reject" }`, `204` on success.
 - `POST /api/session/{id}/form/{formID}/reply` body: `{ "answer": {key: value} }`, `204` on success.
+- `GET /api/session/{id}/form`, `GET /api/session/{id}/form/{formID}`, `GET /api/form` exist but the client never calls them: open forms arrive as `form.created` events, which is also the only timely source.
+
+The tunnel service (`https://opentunnel.xyz`) is a different API from the OpenCode
+server above and is documented separately in [protocol.md](protocol.md).
 - `POST /api/session` body: `{ parentID?, title? }`.
 - `GET /api/info` → `{ version, pid, urls[], paths }`.
 

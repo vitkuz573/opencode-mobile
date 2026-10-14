@@ -57,6 +57,25 @@ adb -s <device-id> install -r build/app/outputs/flutter-apk/app-debug.apk
 `flutter run -d <device-id>` is the hot-reload loop (`r` reload,
 `R` restart). Kotlin changes and the manifest always need a full rebuild.
 
+### Native code
+
+Two Kotlin files exist for two things Dart cannot do
+(`android/app/src/main/kotlin/...`): keep the process alive
+(`KeepAliveService.kt`) and finish TLS mid-handshake (`tunnel/`). They are
+plain Android code with no tests of their own — the Dart side is written
+against narrow interfaces (`TlsTerminator`, method channels) precisely so
+every behaviour around them is unit-tested with fakes. If you touch Kotlin,
+rebuild fully and verify on the device; `flutter run` hot reload will not
+pick it up.
+
+### Tunnel work without a tunnel
+
+Nothing in `test/` talks to the real tunnel service. The bridge speaks to a
+fake socket, the pipes to a fake terminator, the controller to a fake service,
+store and bridge builder. The one thing fakes cannot prove is the end-to-end
+path (claim → certificate → bridge → visitor → answer); that needs a phone
+and is verified by hand, not by CI.
+
 ## The device
 
 - `adb devices` must list the phone; `flutter devices` must show it as
