@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -8,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../state/providers.dart';
 import 'local_visitor_pipes.dart';
+import 'tls_terminator.dart';
 import 'tunnel_api.dart';
 import 'tunnel_bridge.dart';
 import 'tunnel_identity.dart';
@@ -83,10 +83,14 @@ class TunnelState {
 /// service, the storage or the bridge without a network or a phone.
 class TunnelController extends Notifier<TunnelState> {
   TunnelBridgeHandle? _bridge;
+  LocalVisitorPipes? _pipes;
 
   @override
   TunnelState build() {
-    ref.onDispose(() => unawaited(_bridge?.stop()));
+    ref.onDispose(() {
+      unawaited(_bridge?.stop());
+      unawaited(_pipes?.dispose());
+    });
     return const TunnelState();
   }
 
@@ -111,16 +115,21 @@ class TunnelController extends Notifier<TunnelState> {
     try {
       final saved = await _provisioned();
       final log = ref.read(appLogProvider);
+      final terminator = ref.read(tlsTerminatorProvider);
+      // Leaf first, then the chain: that is the order the platform's TLS reads
+      // a certificate in, and a chain left out leaves the visitor with an
+      // anchor it cannot get to.
+      await terminator.prepare(
+        certificateChainPem: '${saved.certificate!}\n${saved.chain!}',
+        privateKeyPem: saved.privateKeyPem!,
+      );
       final pipes = LocalVisitorPipes(
-        // Leaf first, then the chain: that is the order BoringSSL reads a
-        // certificate in, and a chain left out leaves the visitor with an
-        // anchor it cannot get to.
-        certificateChainPem: utf8.encode('${saved.certificate!}\n${saved.chain!}'),
-        privateKeyPem: utf8.encode(saved.privateKeyPem!),
+        terminator: terminator,
         targetHost: targetHost,
         targetPort: targetPort,
         onProblem: (message) => log.warn('tunnel', message),
       );
+      _pipes = pipes;
       final bridge = ref.read(tunnelBridgeBuilderProvider)(
         tunnelId: saved.id,
         token: saved.token,
@@ -154,6 +163,8 @@ class TunnelController extends Notifier<TunnelState> {
   Future<void> stop() async {
     await _bridge?.stop();
     _bridge = null;
+    await _pipes?.dispose();
+    _pipes = null;
     state = const TunnelState();
   }
 
@@ -270,6 +281,14 @@ final tunnelServiceProvider = Provider<TunnelService>((ref) {
 final tunnelStoreProvider = FutureProvider<TunnelStore>((ref) async {
   final support = (await getApplicationSupportDirectory()).path;
   return TunnelStore(Directory('$support/opentunnel'));
+});
+
+/// Finishes the tunnel's TLS on the platform. Replaced in tests, where there is
+/// no phone to terminate anything.
+final tlsTerminatorProvider = Provider<TlsTerminator>((ref) {
+  final terminator = PlatformTlsTerminator();
+  ref.onDispose(terminator.dispose);
+  return terminator;
 });
 
 /// Builds the real bridge. Replaced in tests, where there is no service to

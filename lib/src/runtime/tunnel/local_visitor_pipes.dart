@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'tls_terminator.dart';
 import 'tunnel_bridge.dart';
 import 'tunnel_protocol.dart';
 
@@ -13,36 +14,30 @@ import 'tunnel_protocol.dart';
 /// readable crosses the network, and the private key that reads it never left
 /// this device.
 ///
-/// The handshake is served by a listener opened per connection rather than one
-/// shared by all of them. That sounds wasteful and is not: with a single
-/// listener there is no way to tell which accepted connection belongs to which
-/// visitor, because the ClientHello arrives on the bridge and is not
-/// distinguishable from another visitor's. One listener per connection makes the
-/// pairing unambiguous by construction.
+/// Each connection gets a session of its own, because the ClientHello arrives
+/// on the bridge and cannot be told apart from another visitor's. A session
+/// shared between connections would have no way to be matched to the visitor it
+/// belongs to.
 class LocalVisitorPipes implements VisitorPipeFactory {
   LocalVisitorPipes({
-    required this.certificateChainPem,
-    required this.privateKeyPem,
+    required this.terminator,
     required this.targetHost,
     required this.targetPort,
     this.handshakeTimeout = const Duration(seconds: 20),
     this.onProblem,
   });
 
-  /// The tunnel certificate and its chain, leaf first.
-  final List<int> certificateChainPem;
-
-  /// The key it was issued against.
-  final List<int> privateKeyPem;
-
   /// Where the decrypted conversation goes: the phone-hosted server.
   final String targetHost;
   final int targetPort;
 
+  /// Who finishes the handshake, and with what.
+  final TlsTerminator terminator;
+
   /// How long a visitor gets to finish a handshake before it is given up on.
   ///
-  /// Without this a visitor that opens a connection and says nothing would hold
-  /// a slot for ever, and enough of those would stop the tunnel answering.
+  /// Without this a visitor that opens a connection and says nothing holds a
+  /// slot for ever, and enough of those stop the tunnel answering anyone.
   final Duration handshakeTimeout;
 
   /// Told when a visitor cannot be taken.
@@ -52,198 +47,230 @@ class LocalVisitorPipes implements VisitorPipeFactory {
   /// travel.
   final void Function(String message)? onProblem;
 
-  SecurityContext? _context;
+  final Map<int, _LocalPipe> _live = {};
 
-  /// Built once and reused: parsing the same certificate per visitor would be
-  /// pure waste, and the context is immutable once loaded.
-  Future<SecurityContext> _securityContext() async {
-    final existing = _context;
-    if (existing != null) return existing;
-    final context = SecurityContext()
-      ..useCertificateChainBytes(certificateChainPem)
-      ..usePrivateKeyBytes(privateKeyPem);
-    return _context = context;
+  StreamSubscription<TlsEvent>? _fromTerminator;
+
+  var _watching = false;
+
+  /// Routes the terminator's events to the session they belong to.
+  void _watch() {
+    if (_watching) return;
+    _watching = true;
+    _fromTerminator = terminator.events.listen((event) {
+      switch (event) {
+        case TlsToVisitor(:final connection, :final bytes):
+          _live[connection]?._toVisitor.add(bytes);
+        case TlsToApp(:final connection, :final bytes):
+          _live[connection]?._toServer(bytes);
+        case TlsReady(:final connection):
+          _live[connection]?._handshakeComplete();
+        case TlsFailed(:final connection, :final reason):
+          _live[connection]?._handshakeFailed(reason);
+        case TlsClosed(:final connection):
+          unawaited(_live[connection]?.close());
+      }
+    });
   }
 
   @override
-  Future<VisitorPipe> open(OpenConnection connection) async => _LocalPipe.open(
-        connection: connection,
-        context: await _securityContext(),
-        targetHost: targetHost,
-        targetPort: targetPort,
-        handshakeTimeout: handshakeTimeout,
-        onProblem: onProblem,
-      );
-}
-
-class _LocalPipe implements VisitorPipe {
-  _LocalPipe._({
-    required this.tlsInput,
-    required StreamController<List<int>> visitorOut,
-    required StreamController<List<int>> appOut,
-    required this.targetHost,
-    required this.targetPort,
-    required this.onProblem,
-  })  : _visitorBytes = visitorOut,
-        _appBytes = appOut;
-
-  static Future<_LocalPipe> open({
-    required OpenConnection connection,
-    required SecurityContext context,
-    required String targetHost,
-    required int targetPort,
-    required Duration handshakeTimeout,
-    required void Function(String message)? onProblem,
-  }) async {
-    final listener = await SecureServerSocket.bind(
-      InternetAddress.loopbackIPv4,
-      0,
-      context,
-    );
-
-    // The handshake starts the moment something connects, and the one thing
-    // that will connect is this device - so the socket the listener hands back
-    // is this visitor's and no other.
-    final handshake = listener.first;
-    final tlsInput = await Socket.connect(
-      InternetAddress.loopbackIPv4,
-      listener.port,
-    );
-    onProblem?.call('tls terminator listening on ${listener.port}');
-
-    final pipe = _LocalPipe._(
-      tlsInput: tlsInput,
-      visitorOut: StreamController<List<int>>(),
-      appOut: StreamController<List<int>>(),
+  Future<VisitorPipe> open(OpenConnection connection) async {
+    _watch();
+    final pipe = _LocalPipe(
+      id: connection.connection,
+      terminator: terminator,
       targetHost: targetHost,
       targetPort: targetPort,
+      handshakeTimeout: handshakeTimeout,
       onProblem: onProblem,
+      onClosed: () => _live.remove(connection.connection),
     );
-    unawaited(pipe._completeHandshake(handshake, listener, handshakeTimeout));
+    _live[connection.connection] = pipe;
+    try {
+      // Awaited so the session exists on the platform before the bridge can
+      // hand this pipe a byte: without that, the visitor's ClientHello would
+      // arrive at a session that has not been opened yet.
+      await terminator.start(connection.connection);
+    } catch (error) {
+      onProblem?.call('could not open a TLS session: $error');
+    }
     return pipe;
   }
 
-  /// Raw bytes written here go into the TLS handshake this device performs.
-  ///
-  /// Writing to this starts the handshake, so this pipe has to exist - and be
-  /// wired into the bridge - before the handshake finishes. Waiting for the
-  /// handshake before handing the pipe back would wait for bytes nobody is
-  /// forwarding yet, and the connection would simply time out.
-  final Socket tlsInput;
+  /// Ends every session this factory opened.
+  Future<void> dispose() async {
+    await _fromTerminator?.cancel();
+    _fromTerminator = null;
+    _watching = false;
+    for (final pipe in _live.values.toList(growable: false)) {
+      await pipe.close();
+    }
+  }
+}
 
-  /// What the TLS layer produces, still encrypted, on its way to the visitor.
-  SecureSocket? _tlsOutput;
+class _LocalPipe implements VisitorPipe {
+  _LocalPipe({
+    required this.id,
+    required this.terminator,
+    required this.targetHost,
+    required this.targetPort,
+    required this.handshakeTimeout,
+    required this.onProblem,
+    required this.onClosed,
+  })  : _toVisitor = StreamController<List<int>>(),
+        _toApp = StreamController<List<int>>() {
+    // A visitor that says nothing is not a visitor that is slow: without this
+    // the tunnel owes the service a slot for ever.
+    _stalled = Timer(handshakeTimeout, _handshakeFailed);
+  }
 
-  /// Bytes from the server on this phone, in the clear.
-  Socket? _app;
-
+  final int id;
+  final TlsTerminator terminator;
   final String targetHost;
   final int targetPort;
+  final Duration handshakeTimeout;
   final void Function(String message)? onProblem;
+  final void Function() onClosed;
 
-  final StreamController<List<int>> _visitorBytes;
-  final StreamController<List<int>> _appBytes;
+  /// Encrypted, on its way back to the visitor.
+  final StreamController<List<int>> _toVisitor;
 
-  StreamSubscription<List<int>>? _visitorOut;
-  StreamSubscription<List<int>>? _appIn;
+  /// In the clear, on its way to the visitor once encrypted by [fromApp].
+  ///
+  /// This carries what the phone-hosted server says. What the *visitor* says,
+  /// also in the clear once the TLS layer is finished with it, goes straight
+  /// into the socket to that server instead: the two are opposite directions,
+  /// and sending a visitor's request back out here would hand it straight back
+  /// to the visitor that sent it.
+  final StreamController<List<int>> _toApp;
+
+  /// The phone-hosted server, once a handshake has been out of the way.
+  Socket? _server;
+
+  /// Visitor bytes decrypted, waiting for that server to exist.
+  ///
+  /// Held rather than dropped: the TLS layer can finish a handshake and hand
+  /// over a request in the same breath, and a request that arrived first would
+  /// otherwise be the one thing this visitor never got answered.
+  final List<List<int>> _waitingForServer = [];
+
+  StreamSubscription<List<int>>? _fromServer;
+  Timer? _stalled;
   var closed = false;
 
-  Future<void> _completeHandshake(
-    Future<SecureSocket> handshake,
-    SecureServerSocket listener,
-    Duration timeout,
-  ) async {
-    try {
-      final tls = await handshake.timeout(timeout);
-      if (closed) {
-        tls.destroy();
-        return;
-      }
-      final app = await Socket.connect(targetHost, targetPort);
-      if (closed) {
-        app.destroy();
-        tls.destroy();
-        return;
-      }
-      _tlsOutput = tls;
-      _app = app;
-
-      // Encrypted, leaving this device for the visitor.
-      _visitorOut = tls.listen(
-        _visitorBytes.add,
-        onError: (Object _) => _visitorBytes.addError(const TunnelClosed()),
-        onDone: _visitorBytes.close,
-        cancelOnError: false,
-      );
-      // Clear, from the server on this phone towards the visitor.
-      _appIn = app.listen(
-        _appBytes.add,
-        onError: (Object _) => _appBytes.addError(const TunnelClosed()),
-        onDone: _appBytes.close,
-        cancelOnError: false,
-      );
-    } catch (error) {
-      // The bridge is waiting to hear why a visitor could not be taken, and a
-      // handshake that timed out is the single most common reason.
-      onProblem?.call('the visitor did not complete the handshake: $error');
-      if (!_visitorBytes.isClosed) _visitorBytes.addError(_HandshakeFailed(error));
-      if (!_appBytes.isClosed) _appBytes.addError(_HandshakeFailed(error));
-    } finally {
-      await listener.close();
+  /// Gives decrypted bytes to the phone-hosted server.
+  void _toServer(List<int> bytes) {
+    if (closed) return;
+    final server = _server;
+    if (server == null) {
+      // Bounded for the same reason the bridge bounds held frames: a visitor
+      // that sends a great deal before the handshake finishes must not be able
+      // to fill this device's memory.
+      if (_waitingForServer.length < _maxWaiting) _waitingForServer.add(bytes);
+      return;
     }
+    server.add(bytes);
   }
 
   @override
   void fromVisitor(List<int> bytes) {
     if (closed) return;
-    tlsInput.add(bytes);
+    unawaited(terminator.fromVisitor(id, bytes));
   }
 
   @override
-  Stream<List<int>> get toVisitor => _visitorBytes.stream;
+  Stream<List<int>> get toVisitor => _toVisitor.stream;
 
   @override
   void fromApp(List<int> bytes) {
-    final tls = _tlsOutput;
-    // Dropped rather than queued: before the handshake there is nowhere to put
-    // a plaintext byte, and holding it until then would mean holding it for ever
-    // if the handshake never completes.
-    if (closed || tls == null) return;
-    tls.add(bytes);
+    if (closed) return;
+    unawaited(terminator.fromApp(id, bytes));
   }
 
   @override
-  Stream<List<int>> get toApp => _appBytes.stream;
+  Stream<List<int>> get toApp => _toApp.stream;
+
+  /// Called by the factory once the platform says the handshake is done.
+  Future<void> _handshakeComplete() async {
+    if (closed) return;
+    _stalled?.cancel();
+    _stalled = null;
+    try {
+      final server = await Socket.connect(targetHost, targetPort);
+      if (closed) {
+        server.destroy();
+        return;
+      }
+      _server = server;
+      _fromServer = server.listen(
+        _toApp.add,
+        onError: (Object _) => _toApp.addError(const TunnelClosed()),
+        onDone: _toApp.close,
+        cancelOnError: false,
+      );
+      for (final waiting in _waitingForServer) {
+        if (closed) return;
+        server.add(waiting);
+      }
+      _waitingForServer.clear();
+    } catch (error) {
+      onProblem?.call('the phone-hosted server refused a visitor: $error');
+      await close();
+    }
+  }
+
+  void _handshakeFailed([Object? reason]) {
+    if (closed) return;
+    final why = reason ?? 'the visitor did not finish the handshake';
+    onProblem?.call('the visitor did not complete the handshake: $why');
+    _stalled = null;
+    // Only where somebody is listening. An error handed to a stream with no
+    // listener is stored, never delivered, and surfaces later as a failure of
+    // whatever happened to be running by then - which is how a handshake that
+    // timed out could take down an unrelated test.
+    final failure = _HandshakeFailed(why);
+    if (_toVisitor.hasListener) _toVisitor.addError(failure);
+    if (_toApp.hasListener) _toApp.addError(failure);
+  }
 
   @override
   Future<void> close() async {
     if (closed) return;
     closed = true;
-    await _visitorOut?.cancel();
-    await _appIn?.cancel();
-    for (final controller in [_visitorBytes, _appBytes]) {
-      if (!controller.isClosed) await controller.close();
+    _stalled?.cancel();
+    _stalled = null;
+    onClosed();
+    unawaited(terminator.close(id));
+    await _fromServer?.cancel();
+    for (final controller in [_toVisitor, _toApp]) {
+      if (controller.isClosed) continue;
+      // A single-subscription controller holds its done event back until a
+      // listener takes it, and one that has already gone will not come back.
+      // Waiting on that is waiting for ever, which is how stopping a published
+      // tunnel used to hang. Read it before closing, because closing is what
+      // settles the question.
+      final waited = controller.hasListener;
+      final closing = controller.close();
+      if (waited) await closing;
     }
-    // Shutting down for writing first gives the server a clean end of stream
+    // Shut down for writing first, so the server gets a clean end of stream
     // rather than a socket that simply stopped talking.
-    await _safe(destroy: () async {
-      _tlsOutput?.destroy();
-      _app?.destroy();
-      tlsInput.destroy();
-    });
-  }
-
-  static Future<void> _safe({required Future<void> Function() destroy}) async {
     try {
-      await destroy();
+      _server?.destroy();
     } catch (_) {
       // A socket that is already gone is the state this was aiming at.
     }
+    _server = null;
   }
 }
 
-/// The visitor did not complete a handshake.
+/// How much a visitor may say before the server on this phone is reachable.
 ///
+/// Enough for any request a client sends immediately after a handshake and far
+/// too little for one to matter.
+const _maxWaiting = 64;
+
+/// The visitor did not complete a handshake.
 /// Carries the reason because "no handshake" on its own is the one failure
 /// worth being able to tell apart from every other.
 class _HandshakeFailed implements Exception {

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opencode_mobile/src/runtime/tunnel/tls_terminator.dart';
 import 'package:opencode_mobile/src/runtime/tunnel/tunnel_api.dart';
 import 'package:opencode_mobile/src/runtime/tunnel/tunnel_bridge.dart';
 import 'package:opencode_mobile/src/runtime/tunnel/tunnel_controller.dart';
@@ -13,12 +14,14 @@ void main() {
   late Directory temporary;
   late TunnelStore store;
   late _FakeService service;
+  late _FakeTerminator terminator;
   late int bridgesBuilt;
 
   setUp(() async {
     temporary = await Directory.systemTemp.createTemp('tunnel-controller');
     store = TunnelStore(Directory('${temporary.path}/opentunnel'));
     service = _FakeService();
+    terminator = _FakeTerminator();
     bridgesBuilt = 0;
   });
 
@@ -49,6 +52,7 @@ void main() {
             return service.bridge;
           },
         ),
+        tlsTerminatorProvider.overrideWithValue(terminator),
       ],
     );
     addTearDown(container.dispose);
@@ -79,6 +83,18 @@ void main() {
       expect(saved.token, 'tok');
       expect(saved.privateKeyPem, 'KEY');
       expect(saved.hasCertificate, isTrue);
+    });
+
+    test('hands the platform a key it can serve', () async {
+      // The certificate and its chain travel leaf first: a chain given in any
+      // other order leaves the visitor without an anchor it can get to.
+      final container = open();
+      await publish(container);
+
+      expect(terminator.privateKey, 'KEY');
+      expect(terminator.certificate, startsWith('-----BEGIN CERTIFICATE-----'));
+      expect(terminator.certificate!.indexOf('leaf'),
+          lessThan(terminator.certificate!.indexOf('issuer')));
     });
   });
 
@@ -249,4 +265,44 @@ class _FakeBridge implements TunnelBridgeHandle {
 
   @override
   Future<void> stop() async => stopCalled = true;
+}
+
+/// A terminator that finishes no handshakes, because these tests are about what
+/// gets published and what survives a restart rather than about TLS.
+///
+/// It does keep what it was handed: a tunnel that arrives at the platform
+/// without its certificate cannot serve anybody, and that is worth a test of
+/// its own.
+class _FakeTerminator implements TlsTerminator {
+  final _events = StreamController<TlsEvent>.broadcast();
+
+  String? certificate;
+  String? privateKey;
+  final started = <int>[];
+
+  @override
+  Stream<TlsEvent> get events => _events.stream;
+
+  @override
+  Future<void> prepare({
+    required String certificateChainPem,
+    required String privateKeyPem,
+  }) async {
+    certificate = certificateChainPem;
+    privateKey = privateKeyPem;
+  }
+
+  @override
+  Future<void> start(int connection) async => started.add(connection);
+
+  @override
+  Future<void> fromVisitor(int connection, List<int> bytes) async {}
+
+  @override
+  Future<void> fromApp(int connection, List<int> bytes) async {}
+
+  @override
+  Future<void> close(int connection) async {}
+
+  Future<void> dispose() => _events.close();
 }
