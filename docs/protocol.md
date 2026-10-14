@@ -136,3 +136,14 @@ That is the official flow and it stays broken here for an unrelated reason
 [ANDROID_RUNTIME.md](ANDROID_RUNTIME.md)). This tunnel replaces only the
 transport: `opencode pair` against the tunnelled address still mints the code,
 because pairing reads the service registry the app writes itself.
+
+## Contract
+
+The service's OpenAPI document is vendored at `tool/opentunnel-openapi.json`
+and rules by test, not by generation (`test/tunnel_contract_test.dart`):
+every operation the client calls, every payload field it reads and every
+error status the service declares is asserted there. Five endpoints do not
+repay a generator toolchain, while everything interesting — retries, polling,
+the bridge — is not in the document either way. Refresh the vendored file
+from `https://opentunnel.xyz/openapi.json` and rerun the test; green means
+nothing the client depends on changed.
