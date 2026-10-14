@@ -206,8 +206,12 @@ class TunnelIdentity {
     ]);
   }
 
-  // Written out rather than imported: pointycastle 4 ships no X.509 registry,
-  // and these four are the whole of what a P-256 request needs.
+  // Written out rather than imported: pointycastle 4 ships the CSR skeleton
+  // and an OID registry, but nothing that builds the hard part — the SAN
+  // extension with its implicit tags. Depending on its encoder for the easy
+  // primitives while hand-rolling the tricky composition would leave two
+  // encoders and two sets of edge cases in one request; one local encoder
+  // with one set of rules is the smaller risk.
 
   static const _idEcPublicKey = '1.2.840.10045.2.1';
   static const _prime256v1 = '1.2.840.10045.3.1.7';
