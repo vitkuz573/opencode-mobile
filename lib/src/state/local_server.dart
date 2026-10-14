@@ -389,9 +389,39 @@ class LocalServerController extends Notifier<LocalServerState> {
   }
 
   /// Generates a pairing link so another device can reach this phone.
+  ///
+  /// A remote link asks OpenCode to reconfigure its service, and it applies
+  /// that by stopping the running server and starting a fresh one - which
+  /// cannot work here, because the binary runs under a loader and cannot spawn
+  /// itself (see `docs/ANDROID_RUNTIME.md`). What it can do is stop the server
+  /// first, so the server this app is looking after is put back afterwards
+  /// rather than left dead with nothing to show for the attempt.
   Future<String> pairingLink({required bool remote}) async {
     final handle = await _handleOf();
-    return handle.pairingLink(remote: remote);
+    if (!remote) return handle.pairingLink(remote: false);
+    try {
+      return await handle.pairingLink(remote: true);
+    } finally {
+      await _restoreAfterRemotePairing();
+    }
+  }
+
+  /// Brings the server back if publishing to the internet took it down.
+  ///
+  /// Bounded: the process gets a moment to die before this concludes anything,
+  /// and a server that is still serving is left strictly alone.
+  Future<void> _restoreAfterRemotePairing() async {
+    for (var waited = 0; waited < 10 && state.status.isRunning; waited++) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    if (state.status.isRunning || state.status.phase == LocalServerPhase.stopped) {
+      return;
+    }
+    if (!state.isInstalled) return;
+    ref
+        .read(appLogProvider)
+        .info('local', 'publishing stopped the server; starting it again');
+    await start();
   }
 }
 

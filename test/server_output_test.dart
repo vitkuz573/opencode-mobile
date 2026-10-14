@@ -96,5 +96,33 @@ OpenTunnelClientError: Failed to create tunnel
     test('has nothing to say about nothing', () {
       expect(parseFailure('\n  \n'), isNull);
     });
+
+    // Recorded from a real `pair --remote` run on the device. The framed notice
+    // comes first, so taking the first line literally produced a single box
+    // drawing character as the entire explanation.
+    test('skips the framed notice pair prints before it fails', () {
+      const output = '''│
+▲  This will expose your OpenCode server to the internet.
+│  Traffic is end-to-end encrypted, and access requires your server password.
+│  To pair locally instead, run `opencode pair` without the --remote flag.
+Setting up remote access; this can take a minute...
+Error: Server process exited with code 1
+    at map (native:1:11)
+''';
+      expect(
+        parseFailure(output),
+        'Error: Server process exited with code 1',
+      );
+    });
+
+    test('still reports the first sentence when nothing is labelled', () {
+      // A bullet in front of words makes the line a sentence, not a border.
+      const output = '''│
+│
+▲  Heads up.
+    at map (native:1:11)
+''';
+      expect(parseFailure(output), '▲  Heads up.');
+    });
   });
 }

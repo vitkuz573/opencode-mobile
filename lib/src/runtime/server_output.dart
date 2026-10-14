@@ -39,12 +39,34 @@ String? parsePairingLink(String output) => _pairingLink.firstMatch(output)?.grou
 /// The command's errors are multi-line stack traces. The first line carries the
 /// reason — which is what the user can act on — and the rest is noise from a
 /// bundled runtime they cannot fix.
+///
+/// `pair` prints a framed notice before it does anything, so the first line is
+/// often a box-drawing character and saying so would be no explanation at all.
+/// Those are passed over, and a line that actually names the error wins over
+/// one that merely precedes it.
 String? parseFailure(String output) {
+  String? firstSubstantive;
   for (final line in output.split('\n')) {
     final trimmed = line.trim();
-    if (trimmed.isEmpty) continue;
+    if (_isDecoration(trimmed)) continue;
     if (trimmed.startsWith('at ') || trimmed.startsWith(r'$')) continue;
-    return trimmed;
+    if (trimmed.startsWith('Error:') || trimmed.startsWith('error:')) {
+      return trimmed;
+    }
+    firstSubstantive ??= trimmed;
   }
-  return null;
+  return firstSubstantive;
+}
+
+/// Whether [line] is part of a framed notice rather than a sentence.
+bool _isDecoration(String line) {
+  if (line.isEmpty) return true;
+  for (final unit in line.runes) {
+    final c = String.fromCharCode(unit);
+    // Box drawing, block elements, geometric shapes, and the glyphs the CLI
+    // uses for prompts and bullets.
+    const drawing = '─-═│┃┌┐└┘├┤┬┴┼╭╮╰╯▲▼◀▶✔✖•□■◆●○';
+    if (!drawing.contains(c)) return false;
+  }
+  return true;
 }
