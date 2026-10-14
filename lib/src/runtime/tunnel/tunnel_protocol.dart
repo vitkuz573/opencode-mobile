@@ -262,9 +262,9 @@ abstract final class ResetCode {
   static const tooManyConnections = 'too_many_connections';
 }
 
-/// Which routes a bridge may answer for, given the host the service hands out.
+/// The route a bridge claims for a tunnel: the tunnel host itself.
 ///
-/// A route is the tunnel host itself, or one label in front of it - never two,
-/// and never a deeper name. Answering a name nobody asked for is how a tunnel
-/// ends up serving a host it has no business serving.
-Set<String> routesFor(String hostname) => {'@'};
+/// The service accepts `@` or one DNS label in front of the host; this bridge
+/// has one destination, so it claims one name and answers that name and its
+/// single-label forms.
+List<String> routesFor(String hostname) => const ['@'];
