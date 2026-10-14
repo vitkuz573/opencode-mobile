@@ -4,6 +4,29 @@ import 'dart:math';
 
 import 'package:dio/dio.dart';
 
+/// What the app needs from the tunnel service.
+///
+/// [TunnelApi] is the real one. The interface exists so the controller can be
+/// exercised without a service on the other end - the HTTP client's own rules
+/// are tested there, and repeating them here would only test the test.
+abstract class TunnelService {
+  /// Claims a tunnel, keeping the token, which is shown exactly once.
+  Future<ClaimedTunnel> claim();
+
+  /// Asks for the certificate request to be signed.
+  Future<CertificateInfo> requestCertificate(
+    String id,
+    String token,
+    String csr,
+  );
+
+  /// Waits for a certificate and returns it ready to serve.
+  Future<Certificate> awaitCertificate(String id, String token);
+
+  /// Releases the tunnel and everything issued against it.
+  Future<void> delete(String id, String token);
+}
+
 /// The OpenTunnel HTTP API, as published in `docs/protocol.md`.
 ///
 /// Everything the app needs from the service goes through here: claiming a
@@ -11,7 +34,7 @@ import 'package:dio/dio.dart';
 /// [Dio] so the client can be handed a fake one in tests, and so that the retry
 /// rules - which are part of the contract rather than a detail of it - sit next
 /// to the calls they apply to.
-class TunnelApi {
+class TunnelApi implements TunnelService {
   TunnelApi(this._dio);
 
   final Dio _dio;
@@ -42,7 +65,7 @@ class TunnelApi {
     527: 'the origin server failed the TLS handshake',
   };
 
-  /// Claims a tunnel, keeping the token, which is shown exactly once.
+  @override
   Future<ClaimedTunnel> claim() async {
     final json = _map(
       await _send(
@@ -81,6 +104,7 @@ class TunnelApi {
   ///
   /// Safe to repeat: if the tunnel is already bound to this request the service
   /// answers with the certificate it already holds.
+  @override
   Future<CertificateInfo> requestCertificate(
     String id,
     String token,
@@ -119,6 +143,8 @@ class TunnelApi {
   /// Used when the user stops publishing: the hostname is not coming back, and
   /// a live certificate pointing at a device nobody is publishing from is not
   /// something to leave lying around.
+  @override
+  @override
   Future<void> delete(String id, String token) async {
     await _send<dynamic>(
       () => _dio.delete<dynamic>('/api/tunnel/$id', options: _auth(token)),
@@ -132,6 +158,7 @@ class TunnelApi {
   /// Gives up after [timeout] rather than polling forever. Issuance is seconds
   /// when it is working, and the service says so plainly when it is not; a
   /// publish button that hangs is worse than one that reports a failure.
+  @override
   Future<Certificate> awaitCertificate(
     String id,
     String token, {
@@ -270,7 +297,9 @@ class TunnelApi {
   static TunnelInfo _tunnel(Map<String, dynamic> json) => TunnelInfo(
         id: _string(json, 'id'),
         hostname: _string(json, 'hostname'),
-        state: json['state'] == 'online' ? TunnelState.online : TunnelState.offline,
+        reachability: json['state'] == 'online'
+            ? TunnelReachability.online
+            : TunnelReachability.offline,
         certificateID: json['certificateID'] as String?,
       );
 
@@ -317,19 +346,22 @@ class ClaimedTunnel {
   Uri get url => Uri.parse('https://${info.hostname}/');
 }
 
-enum TunnelState { offline, online }
+/// Whether the service currently sees a tunnel online.
+enum TunnelReachability { offline, online }
 
 class TunnelInfo {
   const TunnelInfo({
     required this.id,
     required this.hostname,
-    required this.state,
+    required this.reachability,
     this.certificateID,
   });
 
   final String id;
   final String hostname;
-  final TunnelState state;
+
+  /// Whether the service currently sees this tunnel online.
+  final TunnelReachability reachability;
   final String? certificateID;
 }
 

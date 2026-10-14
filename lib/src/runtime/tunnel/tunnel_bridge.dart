@@ -84,6 +84,19 @@ class _WebSocketSocket implements BridgeSocket {
 /// What the bridge is doing, for whoever is watching.
 enum BridgeState { idle, connecting, attached, reconnecting, stopped }
 
+/// The part of a bridge the controller drives.
+///
+/// Narrower than [TunnelBridge] on purpose: what the controller needs to start
+/// and stop a tunnel should not also be the thing that a test has to reimplement
+/// to stand in for one.
+abstract class TunnelBridgeHandle {
+  Stream<BridgeState> get states;
+
+  Future<void> start();
+
+  Future<void> stop();
+}
+
 /// A live bridge to a tunnel.
 ///
 /// The service hands out an opaque hostname and forwards whatever a visitor
@@ -95,7 +108,7 @@ enum BridgeState { idle, connecting, attached, reconnecting, stopped }
 /// tunnel that blinks is worse than one that waits. It does not retry what
 /// cannot fix itself - a token the service rejects, a certificate it has not
 /// issued - and says so instead of reconnecting to the same failure.
-class TunnelBridge {
+class TunnelBridge implements TunnelBridgeHandle {
   TunnelBridge({
     required this.tunnelId,
     required this.token,
@@ -149,6 +162,7 @@ class TunnelBridge {
 
   BridgeState get state => _state;
 
+  @override
   Stream<BridgeState> get states => _controller.stream;
 
   /// Visitors connected right now, for a status line.
@@ -160,6 +174,7 @@ class TunnelBridge {
   ///
   /// Returns once the service has accepted the bridge, so a caller can say the
   /// tunnel is live rather than that it is being attempted.
+  @override
   Future<void> start() async {
     _stopping = false;
     final ready = Completer<void>();
@@ -168,6 +183,7 @@ class TunnelBridge {
   }
 
   /// Closes the socket and every visitor, and does not come back.
+  @override
   Future<void> stop() async {
     _stopping = true;
     _heartbeat?.cancel();
