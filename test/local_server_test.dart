@@ -55,17 +55,22 @@ void main() {
       temp: '${temp.path}/support/home/tmp',
     );
     paths.ensureDirectories();
-    File('${paths.runtime}/lib/ld-musl-aarch64.so.1')
-      ..parent.createSync(recursive: true)
-      ..writeAsStringSync(_loaderScript);
-    File('${paths.runtime}/bin/opencode')
-      ..parent.createSync(recursive: true)
-      ..writeAsStringSync(_serverScript);
-    await Process.run('chmod', [
-      '+x',
-      '${paths.runtime}/lib/ld-musl-aarch64.so.1',
-      '${paths.runtime}/bin/opencode',
-    ]);
+    // The stand-in runtime is a pair of `/bin/sh` scripts, so it only exists on
+    // a POSIX host. The tests that spawn it say so and skip; the storage tests
+    // below it need nothing but a directory, and run everywhere.
+    if (!Platform.isWindows) {
+      File('${paths.runtime}/lib/ld-musl-aarch64.so.1')
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(_loaderScript);
+      File('${paths.runtime}/bin/opencode')
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(_serverScript);
+      await Process.run('chmod', [
+        '+x',
+        '${paths.runtime}/lib/ld-musl-aarch64.so.1',
+        '${paths.runtime}/bin/opencode',
+      ]);
+    }
     File('${paths.runtime}/runtime.json').writeAsStringSync(
       '{"version": "9.9.9"}',
     );
