@@ -89,7 +89,13 @@ with:
 | Pairing link | the official flow, including the web UI | a session cookie, 30 day lifetime |
 
 Both are stored in the Android Keystore-backed secure storage. Nothing
-sensitive is written to `SharedPreferences` or logs. The app never connects on
+sensitive is written to `SharedPreferences` or logs.
+
+The tunnel has its own files, and they are not in that storage: the private
+key, the certificate and the token live as files in the app-private directory
+(`opentunnel/` under app support). The sandbox keeps other apps out, but root
+reads them like anything else — see [docs/protocol.md](docs/protocol.md) for
+why that is accepted rather than hidden. The app never connects on
 its own: no auto-restore, no default server.
 
 ## Running the server on the phone

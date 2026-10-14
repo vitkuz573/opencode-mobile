@@ -96,10 +96,16 @@ forms, pairing, usage, providers). No generated code, no checked-in spec to drif
 
 ## Security
 
-- Secrets (passwords, pairing cookies, tunnel token and private key) live in
-  `flutter_secure_storage` (Android Keystore) or the app-private directory.
-  Never in `SharedPreferences`, never in logs; the on-disk log mirrors only
-  what the screen already shows.
+- Secrets split by kind. Server passwords and pairing cookies live in
+  `flutter_secure_storage` (Android Keystore-backed). The tunnel's private
+  key, certificate and token live as files in the app-private directory:
+  a key the app must hand to BoringSSL cannot live behind an API that never
+  releases key material, and sandbox UID isolation is the boundary both rely
+  on. Against a rooted device neither helps — root reads the files and can
+  use any Keystore entry as an oracle — so the docs say so instead of
+  implying hardware protection that is not there. Never in
+  `SharedPreferences`, never in logs; the on-disk log mirrors only what the
+  screen already shows.
 - The tunnel private key never leaves the device; only the certificate signing
   request does. TLS is terminated on the phone against the issued certificate.
 - The bridge serves the tunnel host and one label in front of it, never

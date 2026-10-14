@@ -56,6 +56,15 @@ directory (`opentunnel/`), written atomically before they are needed, so an
 interrupted provisioning resumes instead of re-claiming. A hostname somebody
 may have bookmarked must not silently change.
 
+The private key file is the one secret here that root can carry away: sandbox
+UID isolation and file-based encryption stop other apps and a powered-off
+device, but a live root read takes the key, the token and the certificate
+together — and with the token alone it could attach its own bridge anyway.
+Moving the key into the Keystore would change that only cosmetically (root
+can use Keystore entries as an oracle), while splitting certificate issuance
+across the platform channel, so the key stays a file and this paragraph stays
+honest about it.
+
 ## Bridge
 
 `wss://opentunnel.xyz/api/tunnel/{id}/connect`, WebSocket subprotocol
