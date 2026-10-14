@@ -44,7 +44,9 @@ class TunnelIdentity {
   /// PKCS#8, PEM. Written to disk, sent nowhere.
   final String privateKeyPem;
 
-  /// The signed PKCS#10 request, PEM: what the service issues against.
+  /// The signed PKCS#10 request, bare base64 DER: what the service issues
+  /// against. Not PEM armor: the service fails armored input at parse,
+  /// before the ASN.1 is ever looked at (verified live).
   final String certificationRequest;
 
   /// Generates a fresh key and asks for a certificate covering [hostname].
@@ -69,12 +71,8 @@ class TunnelIdentity {
         _pkcs8(private, public),
         base64.encode,
       ),
-      // PEM armor, not bare base64: the service parses a document, and bare
-      // base64 fails its parser before the ASN.1 is ever looked at.
-      certificationRequest: Der.pem(
-        'CERTIFICATE REQUEST',
+      certificationRequest: base64.encode(
         _certificationRequest(private, public, hostname, random),
-        base64.encode,
       ),
     );
   }
