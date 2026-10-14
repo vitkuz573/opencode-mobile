@@ -15,8 +15,13 @@ import 'package:opencode_mobile/src/state/profile_store.dart';
 const _loaderScript = '#!/bin/sh\nexec "\$@"\n';
 
 const _serverScript = r'''#!/bin/sh
-# argv from the handle: serve --service --hostname 127.0.0.1 --port <port>
-PORT="$6"
+# The port comes from the handle's `--port` argument, parsed by name: the
+# exact argv shape changed before (a flag was dropped) and positional
+# indexing silently broke, leaving an empty port behind.
+PORT=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--port" ]; then PORT="$2"; shift 2; else shift; fi
+done
 echo "server listening on http://127.0.0.1:$PORT"
 mkdir -p "$HOME/.config/opencode"
 sleep 1
