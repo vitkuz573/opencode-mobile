@@ -69,7 +69,10 @@ class TunnelApi implements TunnelService {
   Future<ClaimedTunnel> claim() async {
     final json = _map(
       await _send(
-        () => _dio.post<dynamic>('/api/tunnel'),
+        // The service rejects a request with no body at all, and says nothing
+        // useful when it does. The documented body is an empty object, so that
+        // is what is sent.
+        () => _dio.post<dynamic>('/api/tunnel', data: const <String, Object?>{}),
         retryable: _noSideEffect,
         what: 'claim a tunnel',
       ),
@@ -280,6 +283,14 @@ class TunnelApi implements TunnelService {
       return TunnelApiException(
         'Could not $what: the tunnel service could not be reached '
         '(Cloudflare $status, $cloudflare).',
+      );
+    }
+    // A 4xx with no body is the service telling us it did not like the request
+    // without saying why. Naming the range is more use than the bare number.
+    if (status >= 400 && status < 500) {
+      return TunnelApiException(
+        'Could not $what: the tunnel service rejected the request without '
+        'saying why (HTTP $status).',
       );
     }
     return TunnelApiException('Could not $what (HTTP $status).');

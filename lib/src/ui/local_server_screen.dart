@@ -7,6 +7,7 @@ import '../runtime/local_server.dart';
 import '../data/pairing.dart';
 import '../runtime/lan.dart';
 import '../runtime/runtime_manifest.dart';
+import '../runtime/tunnel/tunnel_controller.dart';
 import '../state/local_server.dart';
 import '../state/providers.dart';
 import 'widgets.dart';
@@ -698,6 +699,10 @@ class _PublishSheetState extends ConsumerState<_PublishSheet> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final link = _link;
+    // Watched so the sheet can say what the tunnel is doing while it is doing
+    // it, rather than only reporting the outcome afterwards.
+    final tunnel = ref.watch(tunnelControllerProvider);
+    final published = _target == _PublishTarget.internet && tunnel.isLive;
 
     return SafeArea(
       child: Padding(
@@ -753,19 +758,47 @@ class _PublishSheetState extends ConsumerState<_PublishSheet> {
                 const SizedBox(height: 16),
               ],
 
+              if (_target == _PublishTarget.internet && tunnel.isBusy) ...[
+                _StatusNote(
+                  icon: Icons.cloud_sync_rounded,
+                  text: switch (tunnel.phase) {
+                    TunnelPhase.claiming => 'Claiming a tunnel address...',
+                    TunnelPhase.provisioning =>
+                      'Getting a certificate for it. This takes a minute...',
+                    TunnelPhase.connecting => 'Connecting to the tunnel...',
+                    _ => 'Setting up...',
+                  },
+                ),
+                const SizedBox(height: 16),
+              ],
+
               if (link != null)
                 _QrPanel(link: link)
               else
                 _PrimaryAction(
                   icon: Icons.qr_code_2_rounded,
                   label: _busy
-                      ? 'Setting up…'
+                      ? 'Setting up...'
                       : (_target == _PublishTarget.internet
                             ? 'Open a tunnel and show the code'
                             : 'Show the code'),
                   busy: _busy,
                   onPressed: _busy ? null : _generate,
                 ),
+
+              // A tunnel that keeps answering is a server exposed to anyone with
+              // the link, so stopping it has to be one tap from where it started
+              // rather than buried in a menu.
+              if (published) ...[
+                const SizedBox(height: 10),
+                _SecondaryAction(
+                  label: 'Stop publishing',
+                  onPressed: () async {
+                    setState(() => _link = null);
+                    await ref.read(tunnelControllerProvider.notifier).stop();
+                  },
+                ),
+              ],
 
               const SizedBox(height: 8),
               _SecondaryAction(
@@ -786,15 +819,26 @@ class _PublishSheetState extends ConsumerState<_PublishSheet> {
     });
     try {
       final controller = ref.read(localServerProvider.notifier);
-      String link;
+      // A pairing code is not bound to an address, so it is minted against
+      // loopback and then rebuilt for wherever the other device can actually
+      // reach. Both routes below do the same thing with different addresses.
+      final port = widget.local.status.port;
+      if (port == null) throw StateError('The server has no port yet');
+
+      final String link;
       if (_target == _PublishTarget.internet) {
-        link = await controller.pairingLink(remote: true);
+        // The tunnel is the app's own, not OpenCode's: `pair --remote` restarts
+        // the service it is pairing with, and the runtime cannot start a copy
+        // of itself under the loader this app has to run it with.
+        final published = await ref
+            .read(tunnelControllerProvider.notifier)
+            .publish(
+              targetHost: '127.0.0.1',
+              targetPort: port,
+            );
+        final printed = await controller.pairingLink(remote: false);
+        link = PairingLink.retarget(printed, published.origin) ?? printed;
       } else {
-        // The server listens on loopback, so the link it prints names the
-        // phone itself. A pairing code is not bound to an address, so the link
-        // is rebuilt against the address the other device can actually reach.
-        final port = widget.local.status.port;
-        if (port == null) throw StateError('The server has no port yet');
         final printed = await controller.pairingLink(remote: false);
         final lan = preferredLanAddress(await lanAddresses());
         link = lan == null
@@ -813,6 +857,35 @@ class _PublishSheetState extends ConsumerState<_PublishSheet> {
 }
 
 enum _PublishTarget { lan, internet }
+
+/// One line saying what is happening, while it happens.
+class _StatusNote extends StatelessWidget {
+  const _StatusNote({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(text, style: theme.textTheme.bodyMedium),
+        ),
+      ],
+    );
+  }
+}
 
 class _QrPanel extends StatelessWidget {
   const _QrPanel({required this.link});

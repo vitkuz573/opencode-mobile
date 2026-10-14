@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../data/api.dart';
 import '../data/app_log.dart';
@@ -49,7 +51,25 @@ class ConnectionState {
 final profileStoreProvider = Provider<ProfileStore>((ref) => ProfileStore());
 
 /// The log the settings screen reads.
-final appLogProvider = Provider<AppLog>((ref) => AppLog());
+///
+/// Mirrored to a file under the app's own directory, so it survives the app
+/// being closed. The file is set as soon as the platform answers where that
+/// directory is; until then the log lives in memory as it always did, which
+/// covers everything the person holding the phone can see.
+final appLogProvider = Provider<AppLog>((ref) {
+  final log = AppLog();
+  unawaited(() async {
+    try {
+      final support = (await getApplicationSupportDirectory()).path;
+      log.file = File('$support/app.log');
+      log.info('app', 'log opened at $support/app.log');
+    } catch (error) {
+      // A log with nowhere to be written is still a log on screen.
+      log.warn('app', 'could not open a log file: $error');
+    }
+  }());
+  return log;
+});
 
 /// Bumped whenever the log changes, so watchers rebuild.
 ///

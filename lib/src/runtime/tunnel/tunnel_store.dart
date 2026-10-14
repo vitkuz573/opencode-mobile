@@ -20,14 +20,14 @@ class TunnelStore {
 
   static const _tokenFile = 'token';
   static const _tunnelFile = 'tunnel.json';
-  static const _pendingFile = 'pending.json';
+  static const _requestFile = 'request.txt';
   static const _keyFile = 'private-key.pem';
   static const _certificateFile = 'certificate.pem';
   static const _chainFile = 'chain.pem';
 
   File get _token => File('${directory.path}/$_tokenFile');
   File get _tunnel => File('${directory.path}/$_tunnelFile');
-  File get _pending => File('${directory.path}/$_pendingFile');
+  File get _request => File('${directory.path}/$_requestFile');
   File get _key => File('${directory.path}/$_keyFile');
   File get _certificate => File('${directory.path}/$_certificateFile');
   File get _chain => File('${directory.path}/$_chainFile');
@@ -41,6 +41,7 @@ class TunnelStore {
       id: id,
       hostname: _hostname(id),
       token: token,
+      certificationRequest: _readIfPresent(_request),
       certificate: _readIfPresent(_certificate),
       chain: _readIfPresent(_chain),
       privateKeyPem: _readIfPresent(_key),
@@ -56,9 +57,11 @@ class TunnelStore {
     required String id,
     required String token,
     required String privateKeyPem,
+    required String certificationRequest,
   }) async {
     await directory.create(recursive: true);
     await _atomic(_key, privateKeyPem);
+    await _atomic(_request, certificationRequest);
     await _atomic(_token, token);
     await _atomic(
       _tunnel,
@@ -74,7 +77,7 @@ class TunnelStore {
 
   /// Forgets the tunnel completely, so publishing again starts from scratch.
   Future<void> clear() async {
-    for (final file in [_token, _tunnel, _pending, _key, _certificate, _chain]) {
+    for (final file in [_token, _tunnel, _request, _key, _certificate, _chain]) {
       if (file.existsSync()) {
         try {
           await file.delete();
@@ -121,6 +124,7 @@ class SavedTunnel {
     required this.id,
     required this.hostname,
     required this.token,
+    this.certificationRequest,
     this.certificate,
     this.chain,
     this.privateKeyPem,
@@ -129,6 +133,13 @@ class SavedTunnel {
   final String id;
   final String hostname;
   final String token;
+
+  /// The request that was sent for this certificate.
+  ///
+  /// Kept because the service reuses the stored request when it renews, so the
+  /// key never has to change - and because a run interrupted between writing
+  /// the key and getting the certificate has to be able to ask again.
+  final String? certificationRequest;
 
   /// The issued certificate, once one has arrived.
   final String? certificate;

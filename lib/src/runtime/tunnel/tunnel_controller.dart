@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../state/providers.dart';
 import 'local_visitor_pipes.dart';
 import 'tunnel_api.dart';
 import 'tunnel_bridge.dart';
@@ -109,16 +110,22 @@ class TunnelController extends Notifier<TunnelState> {
     state = const TunnelState(phase: TunnelPhase.claiming);
     try {
       final saved = await _provisioned();
+      final log = ref.read(appLogProvider);
+      final pipes = LocalVisitorPipes(
+        // Leaf first, then the chain: that is the order BoringSSL reads a
+        // certificate in, and a chain left out leaves the visitor with an
+        // anchor it cannot get to.
+        certificateChainPem: utf8.encode('${saved.certificate!}\n${saved.chain!}'),
+        privateKeyPem: utf8.encode(saved.privateKeyPem!),
+        targetHost: targetHost,
+        targetPort: targetPort,
+        onProblem: (message) => log.warn('tunnel', message),
+      );
       final bridge = ref.read(tunnelBridgeBuilderProvider)(
         tunnelId: saved.id,
         token: saved.token,
         hostname: saved.hostname,
-        pipes: LocalVisitorPipes(
-          certificateChainPem: utf8.encode(saved.certificate!),
-          privateKeyPem: utf8.encode(saved.privateKeyPem!),
-          targetHost: targetHost,
-          targetPort: targetPort,
-        ),
+        pipes: pipes,
       );
       _bridge = bridge;
       bridge.states.listen((next) {
@@ -171,26 +178,42 @@ class TunnelController extends Notifier<TunnelState> {
 
   Future<SavedTunnel> _provisioned() async {
     final existing = await (await _store()).read();
-    if (existing != null && existing.hasCertificate) return existing;
+    final log = ref.read(appLogProvider);
+    if (existing != null && existing.hasCertificate) {
+      log.info('tunnel', 'reusing ${existing.hostname}');
+      return existing;
+    }
 
     state = state.copyWith(phase: TunnelPhase.provisioning);
     final claimed = existing ?? await _claim();
+    log.info('tunnel', 'tunnel ${claimed.id} at ${claimed.hostname}');
 
     if (!claimed.hasCertificate) {
-      // The key is written before the request that uses it, so an interrupted
-      // run resumes rather than stranding a hostname nobody can certify.
-      final identity = ref.read(tunnelIdentityFactoryProvider)(claimed.hostname);
+      // The key and the request are written before the request is sent, so an
+      // interrupted run resumes rather than stranding a hostname nobody can
+      // certify. A request already on disk is reused: the service binds a tunnel
+      // to the first request it sees, and asking again with a new key would
+      // simply be refused.
+      final stored = claimed.certificationRequest;
+      final String certificationRequest;
+      final String privateKeyPem;
+      if (stored != null && claimed.privateKeyPem != null) {
+        certificationRequest = stored;
+        privateKeyPem = claimed.privateKeyPem!;
+      } else {
+        final identity = ref.read(tunnelIdentityFactoryProvider)(claimed.hostname);
+        certificationRequest = identity.certificationRequest;
+        privateKeyPem = identity.privateKeyPem;
+      }
       await (await _store()).writeIdentity(
         id: claimed.id,
         token: claimed.token,
-        privateKeyPem: identity.privateKeyPem,
+        privateKeyPem: privateKeyPem,
+        certificationRequest: certificationRequest,
       );
-      await _api.requestCertificate(
-        claimed.id,
-        claimed.token,
-        identity.certificationRequest,
-      );
+      await _api.requestCertificate(claimed.id, claimed.token, certificationRequest);
       final certificate = await _api.awaitCertificate(claimed.id, claimed.token);
+      log.info('tunnel', 'certificate issued');
       await (await _store()).writeCertificate(certificate.pem, certificate.chainPem);
     }
 
@@ -252,6 +275,7 @@ final tunnelStoreProvider = FutureProvider<TunnelStore>((ref) async {
 /// Builds the real bridge. Replaced in tests, where there is no service to
 /// connect to and no certificate to serve.
 final tunnelBridgeBuilderProvider = Provider<BridgeBuilder>((ref) {
+  final log = ref.read(appLogProvider);
   return ({
     required String tunnelId,
     required String token,
@@ -263,6 +287,8 @@ final tunnelBridgeBuilderProvider = Provider<BridgeBuilder>((ref) {
         token: token,
         hostname: hostname,
         pipes: pipes,
+        onProblem: (message) => log.warn('tunnel', message),
+        onNotice: (message) => log.info('tunnel', message),
       );
 });
 

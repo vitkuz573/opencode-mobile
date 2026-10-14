@@ -41,12 +41,15 @@ void main() {
       );
     });
 
-    test('sends no body', () async {
+    test('sends the empty object the service insists on', () async {
+      // Verified against the live service: a claim with no body at all is
+      // refused with a 400 and no explanation, which is the worst possible way
+      // to find out what it wanted.
       transport.reply(_tunnelJson(token: 't'));
       await api.claim();
       expect(transport.requests.single.method, 'POST');
       expect(transport.requests.single.path, '/api/tunnel');
-      expect(transport.requests.single.body, isNull);
+      expect(transport.requests.single.body, <String, Object?>{});
     });
   });
 
@@ -202,6 +205,20 @@ void main() {
             (e) => e.message,
             'message',
             allOf(contains('TLS handshake'), contains('525')),
+          ),
+        ),
+      );
+    });
+
+    test('says the service refused it, rather than printing a number', () async {
+      transport.replyError(status: 400);
+      await expectLater(
+        api.claim(),
+        throwsA(
+          isA<TunnelApiException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('rejected the request'), contains('400')),
           ),
         ),
       );

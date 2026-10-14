@@ -69,8 +69,9 @@ void main() {
           DerNode.read(base64.decode(identity.certificationRequest)).single;
       final info = request.children.first;
 
-      // attributes [0] { SET { SEQUENCE { OID, SET { GeneralNames } } } }
-      final attribute = info.children[3].children.single.children.single;
+      // attributes [0] is tagged implicitly, so what sits inside it is the
+      // Attribute itself, not a SET of them.
+      final attribute = info.children[3].children.single;
       expect(attribute.children.first.asObjectIdentifier, '2.5.29.17');
       final generalNames = attribute.children[1].children.single.children;
       final covered = generalNames.map((n) => String.fromCharCodes(n.value)).toList();

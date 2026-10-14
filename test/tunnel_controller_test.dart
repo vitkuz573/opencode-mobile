@@ -111,6 +111,7 @@ void main() {
         id: 'abc123',
         token: 'tok',
         privateKeyPem: 'KEY',
+        certificationRequest: 'CSR',
       );
       final container = open();
       await publish(container);

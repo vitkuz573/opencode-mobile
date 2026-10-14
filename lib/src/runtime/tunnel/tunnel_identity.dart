@@ -139,17 +139,21 @@ class TunnelIdentity {
   /// Routes are addressed as `<route>.<hostname>`, so without the wildcard every
   /// route is refused by the visitor's client. The common name cannot stand in:
   /// no client has fallen back to it for years.
-  static Uint8List _subjectAltName(String hostname) => Der.set([
-        Der.sequence([
-          Der.objectIdentifier('2.5.29.17'),
-          Der.set([
-            Der.sequence([
-              Der.contextPrimitive(2, Uint8List.fromList(ascii.encode(hostname))),
-              Der.contextPrimitive(
-                2,
-                Uint8List.fromList(ascii.encode('*.$hostname')),
-              ),
-            ]),
+  ///
+  /// This returns the Attribute SEQUENCE itself, not a SET of them: the
+  /// `attributes` field of a request is tagged `[0]` *implicitly*, so the tag
+  /// replaces the SET's rather than wrapping it. Leaving the SET in produces a
+  /// structure a strict parser refuses, which is what a certificate authority
+  /// is.
+  static Uint8List _subjectAltName(String hostname) => Der.sequence([
+        Der.objectIdentifier('2.5.29.17'),
+        Der.set([
+          Der.sequence([
+            Der.contextPrimitive(2, Uint8List.fromList(ascii.encode(hostname))),
+            Der.contextPrimitive(
+              2,
+              Uint8List.fromList(ascii.encode('*.$hostname')),
+            ),
           ]),
         ]),
       ]);

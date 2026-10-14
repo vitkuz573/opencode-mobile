@@ -151,7 +151,9 @@ void main() {
       await pump();
       sockets.single.binary(7, [1, 2, 3]);
       await pump();
-      expect(pipes.pipeFor(7)!.toVisitorBytes, [
+      // What arrives on the bridge is what the visitor sent, so it goes into
+      // this device's TLS - not back out towards the visitor.
+      expect(pipes.pipeFor(7)!.fromVisitorBytes, [
         [1, 2, 3],
       ]);
       await bridge.stop();
@@ -164,8 +166,8 @@ void main() {
       await pump();
       sockets.single.binary(2, [9]);
       await pump();
-      expect(pipes.pipeFor(1)!.toVisitorBytes, isEmpty);
-      expect(pipes.pipeFor(2)!.toVisitorBytes, [
+      expect(pipes.pipeFor(1)!.fromVisitorBytes, isEmpty);
+      expect(pipes.pipeFor(2)!.fromVisitorBytes, [
         [9],
       ]);
       await bridge.stop();
@@ -177,30 +179,57 @@ void main() {
       await pump();
       sockets.single.binaryBytes([1, 2]);
       await pump();
-      expect(pipes.pipeFor(1)!.toVisitorBytes, isEmpty);
+      expect(pipes.pipeFor(1)!.fromVisitorBytes, isEmpty);
       await bridge.stop();
     });
 
-    test('sends what the server says back to the visitor, encrypted', () async {
+    test('sends what the server says back out over the bridge', () async {
       final bridge = await attached();
       sockets.single.open(conn: 3, sni: host);
       await pump();
-      pipes.pipeFor(3)!.emitFromApp([4, 5]);
+      pipes.pipeFor(3)!.emitToVisitor([4, 5]);
       await pump();
-      expect(pipes.pipeFor(3)!.toVisitorBytes, [
-        [4, 5],
+      final frame = BridgeProtocol.decodeFrame(sockets.single.frames.single)!;
+      expect(frame.connection, 3);
+      expect(frame.payload, [4, 5]);
+      await bridge.stop();
+    });
+
+    test('feeds the server what the visitor said, in the clear', () async {
+      final bridge = await attached();
+      sockets.single.open(conn: 3, sni: host);
+      await pump();
+      pipes.pipeFor(3)!.emitToApp([6]);
+      await pump();
+      expect(pipes.pipeFor(3)!.fromAppBytes, [
+        [6],
       ]);
       await bridge.stop();
     });
 
-    test('passes the visitor\'s bytes to the server in the clear', () async {
-      final bridge = await attached();
-      sockets.single.open(conn: 3, sni: host);
+    test('holds the first frames until the pipe is open', () async {
+      // The service sends the ClientHello in the very next frame after
+      // announcing the connection, and both can arrive in the same turn while
+      // opening the pipe is still waiting on the platform. Dropping it produces
+      // a handshake that simply never completes.
+      final bridge = build();
+      final started = bridge.start();
       await pump();
-      pipes.pipeFor(3)!.emitFromVisitor([6]);
+      sockets.single.accept(const {
+        'type': 'attached',
+        'session': 's1',
+        'routes': ['@'],
+      });
+      await started;
+
+      sockets.single.open(conn: 8, sni: host);
+      sockets.single.binary(8, [1, 1]);
+      sockets.single.binary(8, [2, 2]);
       await pump();
-      expect(pipes.pipeFor(3)!.toAppBytes, [
-        [6],
+
+      expect(pipes.pipeFor(8)!.fromVisitorBytes, [
+        [1, 1],
+        [2, 2],
       ]);
       await bridge.stop();
     });
@@ -251,6 +280,48 @@ void main() {
         _resetsOf(sockets.single).map((r) => r['code']),
         contains(ResetCode.unknownRoute),
       );
+      await bridge.stop();
+    });
+  });
+
+  group('the address', () {
+    test('is a WebSocket even though the service is named over https', () async {
+      // `WebSocket.connect` will not dial an https URL at all, and says nothing
+      // useful when asked to. The address has to say what it is.
+      Uri? opened;
+      final bridge = TunnelBridge(
+        tunnelId: 'abc123',
+        token: 'tok',
+        hostname: host,
+        pipes: pipes,
+        openSocket: (uri, protocols) async {
+          opened = uri;
+          return _FakeSocket(protocols);
+        },
+        attachTimeout: const Duration(milliseconds: 30),
+      );
+      await expectLater(bridge.start(), throwsA(isA<BridgeFailure>()));
+      expect(opened!.scheme, 'wss');
+      expect(opened!.path, '/api/tunnel/abc123/connect');
+      await bridge.stop();
+    });
+
+    test('speaks plain ws when pointed at a plain service', () async {
+      Uri? opened;
+      final bridge = TunnelBridge(
+        tunnelId: 'abc123',
+        token: 'tok',
+        hostname: host,
+        pipes: pipes,
+        apiBaseUrl: 'http://localhost:8080',
+        openSocket: (uri, protocols) async {
+          opened = uri;
+          return _FakeSocket(protocols);
+        },
+        attachTimeout: const Duration(milliseconds: 30),
+      );
+      await expectLater(bridge.start(), throwsA(isA<BridgeFailure>()));
+      expect(opened!.scheme, 'ws');
       await bridge.stop();
     });
   });
@@ -307,6 +378,10 @@ class _FakeSocket implements BridgeSocket {
 
   final _controller = StreamController<Object>();
   final sent = <String>[];
+
+  /// Binary frames this bridge sent, kept whole so a test can decode one.
+  final frames = <List<int>>[];
+
   final List<String> protocols;
   var closed = false;
 
@@ -331,6 +406,9 @@ class _FakeSocket implements BridgeSocket {
 
   @override
   void send(String text) => sent.add(text);
+
+  @override
+  void sendFrame(List<int> bytes) => frames.add(bytes);
 
   @override
   Future<void> close() async {
@@ -368,33 +446,40 @@ class _FakePipe implements VisitorPipe {
   _FakePipe(this.conn);
 
   final int conn;
-  final toVisitorBytes = <List<int>>[];
-  final toAppBytes = <List<int>>[];
+
+  /// Raw bytes handed in from the bridge, as the visitor sent them.
+  final fromVisitorBytes = <List<int>>[];
+
+  /// Plain bytes handed in towards the server on this phone.
+  final fromAppBytes = <List<int>>[];
+
   var closed = false;
 
-  final _fromVisitor = StreamController<List<int>>();
-  final _fromApp = StreamController<List<int>>();
+  final _visitorOut = StreamController<List<int>>();
+  final _appOut = StreamController<List<int>>();
+
+  /// Encrypted bytes heading out to the visitor.
+  void emitToVisitor(List<int> bytes) => _visitorOut.add(bytes);
+
+  /// Plain bytes heading towards the visitor, before encryption.
+  void emitToApp(List<int> bytes) => _appOut.add(bytes);
 
   @override
-  Stream<List<int>> get fromVisitor => _fromVisitor.stream;
+  void fromVisitor(List<int> bytes) => fromVisitorBytes.add(bytes);
 
   @override
-  Stream<List<int>> get fromApp => _fromApp.stream;
-
-  void emitFromVisitor(List<int> bytes) => _fromVisitor.add(bytes);
-
-  void emitFromApp(List<int> bytes) => _fromApp.add(bytes);
+  Stream<List<int>> get toVisitor => _visitorOut.stream;
 
   @override
-  void toVisitor(List<int> bytes) => toVisitorBytes.add(bytes);
+  void fromApp(List<int> bytes) => fromAppBytes.add(bytes);
 
   @override
-  void toApp(List<int> bytes) => toAppBytes.add(bytes);
+  Stream<List<int>> get toApp => _appOut.stream;
 
   @override
   Future<void> close() async {
     closed = true;
-    if (!_fromVisitor.isClosed) await _fromVisitor.close();
-    if (!_fromApp.isClosed) await _fromApp.close();
+    if (!_visitorOut.isClosed) await _visitorOut.close();
+    if (!_appOut.isClosed) await _appOut.close();
   }
 }

@@ -8,23 +8,25 @@ import 'tunnel_protocol.dart';
 /// One visitor, from the moment the service says it is connecting to the moment
 /// it is gone.
 ///
-/// Two conversations sit behind it. [fromVisitor] and [toVisitor] carry the TLS
-/// the visitor negotiated - exactly what crosses the bridge untouched.
-/// [fromApp] and [toApp] carry the same conversation after this device
-/// terminated TLS with the tunnel certificate, and are the only part of it the
-/// service never sees.
+/// The names say which way bytes travel, because getting that wrong produces a
+/// tunnel that accepts every connection and silently carries nonsense, which is
+/// much harder to notice than one that refuses them.
+///
+/// Everything crossing the bridge in binary is the visitor's TLS, untouched.
+/// Everything on the far side of [toApp] and [fromApp] is in the clear, and is
+/// the only part of the conversation the service never sees.
 abstract class VisitorPipe {
-  /// Bytes arriving from the visitor, still encrypted.
-  Stream<List<int>> get fromVisitor;
+  /// Bytes arriving from the visitor, still encrypted. Fed into TLS here.
+  void fromVisitor(List<int> bytes);
 
-  /// Bytes going to the visitor, encrypted with the tunnel certificate.
-  void toVisitor(List<int> bytes);
+  /// Bytes on their way to the visitor, already encrypted for it.
+  Stream<List<int>> get toVisitor;
 
-  /// Bytes arriving from the phone's server, decrypted.
-  Stream<List<int>> get fromApp;
+  /// Bytes arriving from the server on this phone, in the clear.
+  void fromApp(List<int> bytes);
 
-  /// Bytes going to the phone's server, in the clear.
-  void toApp(List<int> bytes);
+  /// Bytes on their way to the visitor once encrypted, in the clear until then.
+  Stream<List<int>> get toApp;
 
   Future<void> close();
 }
@@ -45,6 +47,9 @@ abstract class BridgeSocket {
   Stream<Object> get events;
 
   void send(String text);
+
+  /// A binary frame: connection id and payload, already framed by the caller.
+  void sendFrame(List<int> bytes);
 
   Future<void> close();
 }
@@ -76,6 +81,9 @@ class _WebSocketSocket implements BridgeSocket {
 
   @override
   void send(String text) => _socket.add(text);
+
+  @override
+  void sendFrame(List<int> bytes) => _socket.add(bytes);
 
   @override
   Future<void> close() async => _socket.close();
@@ -121,6 +129,8 @@ class TunnelBridge implements TunnelBridgeHandle {
     this.attachTimeout = const Duration(seconds: 10),
     this.reconnectFloor = const Duration(milliseconds: 250),
     this.reconnectCeiling = const Duration(seconds: 30),
+    this.onProblem,
+    this.onNotice,
     Random? random,
   })  : _openSocket = openSocket ?? openTunnelSocket,
         _random = random ?? Random(),
@@ -146,10 +156,32 @@ class TunnelBridge implements TunnelBridgeHandle {
   final Duration reconnectFloor;
   final Duration reconnectCeiling;
 
+  /// Told about anything that goes wrong below.
+  ///
+  /// A visitor refused is not an error the person holding the phone can do
+  /// anything about, but it is the only clue when a tunnel is published and
+  /// nothing can reach it - and "nothing arrives" is otherwise indistinguishable
+  /// from "the address is wrong".
+  final void Function(String message)? onProblem;
+
+  /// Told about the ordinary course of a bridge: connected, attached, a visitor
+  /// arriving.
+  ///
+  /// A tunnel that is published and unreachable looks identical from the
+  /// outside whether the bridge never connected or the service never routed to
+  /// it, and telling those apart is the whole diagnosis.
+  final void Function(String message)? onNotice;
+
   final Random _random;
   final String _host;
 
   final _live = <int, _Live>{};
+
+  /// Frames for a connection whose pipe is still being opened.
+  final _held = <int, List<List<int>>>{};
+
+  /// How many frames are held for a connection that never opens.
+  static const _maxHeldFrames = 8;
   final _controller = StreamController<BridgeState>.broadcast();
 
   BridgeSocket? _socket;
@@ -168,7 +200,20 @@ class TunnelBridge implements TunnelBridgeHandle {
   /// Visitors connected right now, for a status line.
   int get openConnections => _live.length;
 
-  Uri get _endpoint => Uri.parse('$apiBaseUrl/api/tunnel/$tunnelId/connect');
+  /// The bridge is a WebSocket, and the address has to say so.
+  ///
+  /// `WebSocket.connect` will not take an `https` URL at all - not as an error,
+  /// just as an address it cannot dial - so the scheme is swapped rather than
+  /// assumed, and a plain `http` base (used in tests, and by anyone pointing
+  /// this at a service of their own) becomes `ws`.
+  Uri get _endpoint {
+    final base = Uri.parse(apiBaseUrl);
+    final scheme = switch (base.scheme) {
+      'https' || 'wss' => 'wss',
+      _ => 'ws',
+    };
+    return base.replace(scheme: scheme, path: '/api/tunnel/$tunnelId/connect');
+  }
 
   /// Connects and stays connected until [stop].
   ///
@@ -231,18 +276,17 @@ class TunnelBridge implements TunnelBridgeHandle {
     );
   }
 
-  Future<void> _retry(Completer<void> firstAttach, Object error) {
-    if (_stopping) return Future<void>.value();
-    if (error is BridgeFailure && error.isFinal) {
+  Future<void> _retry(Completer<void> firstAttach, Object error) async {
+    if (_stopping) return;
+    final failure = error is BridgeFailure
+        ? error
+        : BridgeFailure('The tunnel could not be reached: $error');
+    if (failure.isFinal) {
       // Retrying would only arrive at the same refusal.
-      if (!firstAttach.isCompleted) firstAttach.completeError(error);
-      return Future<void>.value();
+      if (!firstAttach.isCompleted) firstAttach.completeError(failure);
+      return;
     }
-    if (!firstAttach.isCompleted) {
-      firstAttach.completeError(
-        const BridgeFailure('The tunnel could not be reached.'),
-      );
-    }
+    if (!firstAttach.isCompleted) firstAttach.completeError(failure);
     final wait = _jittered(_backoff);
     _backoff = Duration(
       milliseconds: min(
@@ -268,6 +312,7 @@ class TunnelBridge implements TunnelBridgeHandle {
     _emit(_state == BridgeState.idle ? BridgeState.connecting : _state);
     final socket = await _openSocket(_endpoint, const [BridgeProtocol.subprotocol]);
     _socket = socket;
+    onNotice?.call('bridge connected to $_endpoint');
 
     final attached = Completer<Attached>();
     var idle = idleTimeoutFallback;
@@ -312,6 +357,9 @@ class TunnelBridge implements TunnelBridgeHandle {
     try {
       final value = await attached.future.timeout(attachTimeout);
       idle = value.idleTimeoutMs;
+      onNotice?.call(
+        'bridge attached as ${value.session}, holding ${value.routes}',
+      );
       return value;
     } on TimeoutException {
       await socket.close();
@@ -354,17 +402,39 @@ class TunnelBridge implements TunnelBridgeHandle {
   void _onFrame(List<int> bytes) {
     final frame = BridgeProtocol.decodeFrame(bytes);
     if (frame == null) return;
-    _live[frame.connection]?.pipe.toVisitor(frame.payload);
+    final pipe = _live[frame.connection]?.pipe;
+    if (pipe == null) {
+      // The service sends the ClientHello in the very next frame after
+      // announcing the connection, and both can arrive in the same turn - while
+      // opening the pipe is still waiting on the platform. Held until then,
+      // because a handshake that never receives its first bytes looks exactly
+      // like one that is being refused.
+      final held = _held.putIfAbsent(frame.connection, () => <List<int>>[]);
+      // Bounded: a visitor that announces and says nothing must not be able
+      // to fill this device's memory.
+      if (held.length < _maxHeldFrames) held.add(frame.payload);
+      onNotice?.call(
+        'holding ${frame.payload.length} bytes for connection '
+        '${frame.connection} until its pipe opens',
+      );
+      return;
+    }
+    pipe.fromVisitor(frame.payload);
   }
 
   /// Brings one visitor in: refused with a reason if it should not be here,
   /// wired both ways if it should.
   Future<void> _open(OpenConnection open) async {
     if (_live.length >= maxConnections) {
+      onProblem?.call(
+        'turned away a visitor on ${open.sni}: already holding '
+        '$maxConnections connections',
+      );
       _refuse(open.connection, ResetCode.tooManyConnections);
       return;
     }
     if (!_serves(open.sni)) {
+      onProblem?.call('turned away ${open.sni}: not a name this tunnel serves');
       _refuse(open.connection, ResetCode.unknownRoute);
       return;
     }
@@ -372,7 +442,14 @@ class TunnelBridge implements TunnelBridgeHandle {
     final VisitorPipe pipe;
     try {
       pipe = await pipes.open(open);
-    } catch (_) {
+      onNotice?.call(
+        'visitor on ${open.sni} (connection ${open.connection}) is through',
+      );
+    } catch (error) {
+      onProblem?.call(
+        'could not take a visitor on ${open.sni} (connection ${open.connection}): '
+        '$error',
+      );
       _refuse(open.connection, ResetCode.unknownRoute);
       return;
     }
@@ -380,28 +457,51 @@ class TunnelBridge implements TunnelBridgeHandle {
     final live = _Live(pipe);
     _live[open.connection] = live;
 
-    // From the phone's server, decrypted, encrypted towards the visitor.
-    live.toVisitor = pipe.fromApp.listen(
-      pipe.toVisitor,
+    // Whatever arrived while the pipe was being opened goes in first, in the
+    // order it arrived. The handshake cannot start without it.
+    final held = _held.remove(open.connection);
+    if (held != null) {
+      for (final bytes in held) {
+        pipe.fromVisitor(bytes);
+      }
+      onNotice?.call(
+        'fed ${held.length} held frames (${held.fold<int>(0, (n, f) => n + f.length)} '
+        'bytes) into connection ${open.connection}',
+      );
+    }
+
+    // What this device hands back after encrypting for the visitor: straight
+    // out over the bridge, tagged with the connection it belongs to.
+    live.outbound = pipe.toVisitor.listen(
+      (bytes) => _sendFrame(open.connection, bytes),
       onDone: () => _send(End(conn: open.connection).toJson()),
       onError: (Object _) =>
           _refuse(open.connection, ResetCode.unknownRoute),
       cancelOnError: false,
     );
 
-    // From the visitor, encrypted, decrypted towards the phone's server. An
-    // empty write is how a half-close is expressed: the service ends a
-    // connection the same way, and both sides have to be told.
-    live.fromVisitor = pipe.fromVisitor.listen(
-      pipe.toApp,
-      onDone: () => pipe.toApp(const <int>[]),
+    // What the server on this phone says, in the clear, on its way to be
+    // encrypted. An empty write is how a half-close is expressed: the service
+    // ends a connection the same way, and both sides have to be told.
+    live.inbound = pipe.toApp.listen(
+      pipe.fromApp,
+      onDone: () => pipe.fromApp(const <int>[]),
       onError: (Object _) => unawaited(_close(open.connection)),
       cancelOnError: false,
     );
   }
 
+  void _sendFrame(int conn, List<int> bytes) {
+    try {
+      _socket?.sendFrame(BridgeProtocol.encodeFrame(conn, bytes));
+    } catch (_) {
+      // The socket is on its way out; the reconnect loop deals with it.
+    }
+  }
+
   Future<void> _close(int conn, {int? code, bool sendEnd = true}) async {
     final live = _live.remove(conn);
+    _held.remove(conn);
     if (live == null) return;
     await live.cancel();
     await live.pipe.close();
@@ -413,6 +513,7 @@ class TunnelBridge implements TunnelBridgeHandle {
   }
 
   Future<void> _closeAll() async {
+    _held.clear();
     final open = _live.values.toList(growable: false);
     _live.clear();
     for (final live in open) {
@@ -463,12 +564,16 @@ class _Live {
   _Live(this.pipe);
 
   final VisitorPipe pipe;
-  StreamSubscription<List<int>>? toVisitor;
-  StreamSubscription<List<int>>? fromVisitor;
+
+  /// Carrying bytes out to the visitor.
+  StreamSubscription<List<int>>? outbound;
+
+  /// Carrying bytes in from the server on this phone.
+  StreamSubscription<List<int>>? inbound;
 
   Future<void> cancel() async {
-    await toVisitor?.cancel();
-    await fromVisitor?.cancel();
+    await outbound?.cancel();
+    await inbound?.cancel();
   }
 }
 
