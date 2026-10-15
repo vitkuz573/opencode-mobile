@@ -332,6 +332,11 @@ class OpenCodeApi {
       final message = messageFromJson(_map(raw));
       if (message != null) messages.add(message);
     }
+    // The server answers newest first, and a conversation that reads bottom to
+    // top is worse than no conversation at all. Sorted here rather than in the
+    // view because this list is also what gets appended to as the answer streams
+    // in, and one order has to hold for both.
+    messages.sort((a, b) => a.created.compareTo(b.created));
     return messages;
   }
 
